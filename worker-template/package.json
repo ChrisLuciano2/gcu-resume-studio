@@ -1,0 +1,14 @@
+{
+  "name": "gcu-resume-studio-worker-template",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.1",
+    "wrangler": "^3.78.0"
+  }
+}

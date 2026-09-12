@@ -1,0 +1,21 @@
+# Local-dev reference config. The orchestrator (apps/web/lib/cloudflare.ts) deploys
+# this script's source directly via the Workers REST API per-student, with bindings
+# built at deploy time (KV namespace id, Supabase URL/service key) — this file is
+# for `wrangler dev` against mocked bindings, not for `wrangler deploy`.
+name = "gcu-resume-studio-worker-template"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "CHAT_KV"
+id = "local-dev-placeholder"
+
+[vars]
+SUPABASE_URL = "http://localhost:54321"
+DAILY_CHAT_BUDGET = "20"
+
+# SUPABASE_SERVICE_KEY is a secret in real deployments (secret_text binding) —
+# for local `wrangler dev` set it with: wrangler secret put SUPABASE_SERVICE_KEY

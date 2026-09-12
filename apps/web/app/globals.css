@@ -1,0 +1,36 @@
+/* Design tokens from design-system.md — see the imported Connect Accounts.dc.html
+   for the full screen this backend was built to support. This pass focuses on the
+   backend; only a minimal functional Connect Accounts screen is implemented here
+   to exercise it end-to-end, not a pixel-perfect recreation of the editor/bank. */
+
+:root {
+  --purple: #522398;
+  --purple-hi: #6a32c0;
+  --purple-tint: #f2edfa;
+  --black: #000000;
+  --white: #ffffff;
+  --ink-2: #4a4750;
+  --ink-3: #6e6b76;
+  --surface: #f7f6f9;
+  --surface-2: #f1eff4;
+  --line: #e3e0ea;
+  --line-strong: #cfc9d9;
+  --danger: #a3282b;
+  --danger-tint: #fbefef;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--white);
+  color: var(--black);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+}
+
+code,
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}

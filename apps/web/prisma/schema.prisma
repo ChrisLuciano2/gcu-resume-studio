@@ -1,0 +1,95 @@
+// Central platform database. Holds ONLY what's needed to log a student in, drive
+// provisioning of their own Supabase/Cloudflare infra, and route public draft links
+// back to the right student. Resume/draft content never lives here — see
+// PLAN.md and lib/provisioning/schema.sql for the per-student Supabase schema.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  connections     Connection[]
+  provisioningRun ProvisioningRun?
+  publicDrafts    PublicDraftIndex[]
+}
+
+enum Provider {
+  SUPABASE
+  CLOUDFLARE
+}
+
+enum ConnectionMethod {
+  OAUTH
+  TOKEN
+}
+
+enum ConnectionStatus {
+  NOT_CONNECTED
+  CONNECTING
+  CONNECTED
+  ERROR
+}
+
+model Connection {
+  id       String           @id @default(cuid())
+  userId   String
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider Provider
+  method   ConnectionMethod @default(OAUTH)
+  status   ConnectionStatus @default(NOT_CONNECTED)
+
+  // OAuth token material — AES-256-GCM encrypted at rest via lib/crypto.ts.
+  // Never sent to the browser.
+  encryptedAccessToken  String?
+  encryptedRefreshToken String?
+  encryptedApiToken     String? // pasted-token fallback path
+
+  providerAccountId String? // Supabase org id / Cloudflare account id
+  oauthStateNonce   String? // pending-flow CSRF nonce, cleared once the callback lands
+
+  // { projectRef, projectUrl, anonKey, serviceRoleKeyEncrypted, workerUrl,
+  //   kvNamespaceId, accountId, workerScriptName }
+  metadataJson Json?
+
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, provider])
+}
+
+model ProvisioningRun {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // [{ key, label, state: 'pending'|'active'|'done'|'error', completedAt }]
+  stepsJson Json
+  updatedAt DateTime @updatedAt
+}
+
+/// The routing table `/r/[slug]` depends on. A recruiter link only carries a slug —
+/// this is the ONLY place in the central schema that maps a bare slug back to a
+/// student, since resume/draft content itself lives in the student's own Supabase.
+/// Written by every draft-creation path (resumes/ingest's default draft,
+/// drafts/[id]/tailor's saveNew, drafts/[id]/duplicate) and deleted by
+/// drafts/[id]/delete. See PLAN.md for the exhaustive list of writers.
+model PublicDraftIndex {
+  slug      String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workerUrl String // cached copy of Connection.metadataJson.workerUrl, for one-lookup routing
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
