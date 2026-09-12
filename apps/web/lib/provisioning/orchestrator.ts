@@ -199,9 +199,20 @@ function currentActiveStep(steps: ProvisioningStep[]): string {
 
 async function failStep(userId: string, connectionId: string, stepKey: string, err: unknown) {
   await updateStep(userId, stepKey, "error");
+  // Deliberately never store the raw exception message here. `lastError` is read
+  // back by GET /api/provisioning/status and shown in the UI — but the errors
+  // this catches come from deployWorker/createProject/exchangeCodeForToken, whose
+  // failure responses embed the third-party API's raw body. Those requests carry
+  // real secrets (the Supabase service-role key as a Worker binding, this
+  // platform's own OAuth client secret, a freshly generated DB password) — if a
+  // provider's error response ever echoes back what we sent, that secret would
+  // otherwise flow: thrown Error -> here -> lastError -> the browser. Log the full
+  // error server-side (where it's actually needed to debug a failed deploy);
+  // surface only a fixed, per-step-safe message to anything client-reachable.
+  console.error(`provisioning step "${stepKey}" failed for user ${userId}:`, err);
   await prisma.connection.update({
     where: { id: connectionId },
-    data: { status: "ERROR", lastError: err instanceof Error ? err.message : String(err) },
+    data: { status: "ERROR", lastError: `Setup failed at step "${stepKey}". Try reconnecting — if it keeps failing, contact support.` },
   });
 }
 

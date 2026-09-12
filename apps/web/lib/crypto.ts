@@ -1,22 +1,23 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-
-// AES-256-GCM at-rest encryption for OAuth tokens and the Supabase service-role key
-// held in the central DB. MASTER_KEY must be a 32-byte key, base64-encoded.
-// Format on disk: base64(iv) + "." + base64(authTag) + "." + base64(ciphertext)
+import { decodeMasterKey } from "./env";
 
 const ALGO = "aes-256-gcm";
 const IV_LENGTH = 12;
 
+// AES-256-GCM at-rest encryption for OAuth tokens and the Supabase service-role key
+// held in the central DB. MASTER_KEY must be a 32-byte key, base64-encoded.
+// Format on disk: base64(iv) + "." + base64(authTag) + "." + base64(ciphertext)
+//
+// This also gets validated eagerly at process startup (see instrumentation.ts +
+// lib/env.ts) so a missing/malformed key fails loudly before the server accepts
+// traffic. getMasterKey() re-validates per call rather than caching, on purpose:
+// no in-memory shortcut that could let a bad key slip past in a code path that
+// forgot to import instrumentation.ts (e.g. a standalone script or test runner).
+
 function getMasterKey(): Buffer {
   const raw = process.env.MASTER_KEY;
   if (!raw) throw new Error("MASTER_KEY is not set");
-  const key = Buffer.from(raw, "base64");
-  if (key.length !== 32) {
-    throw new Error(
-      `MASTER_KEY must decode to 32 bytes for AES-256-GCM, got ${key.length}. Generate with: openssl rand -base64 32`,
-    );
-  }
-  return key;
+  return decodeMasterKey(raw);
 }
 
 export function encryptSecret(plaintext: string): string {

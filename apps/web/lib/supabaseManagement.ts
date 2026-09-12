@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { secretSafeHttpError } from "./httpError";
 
 // Thin client for the Supabase Management API's OAuth + project-provisioning
 // endpoints. See PLAN.md "OAuth + provisioning flows" for the sequence this
@@ -59,7 +60,10 @@ export async function exchangeCodeForToken(code: string, codeVerifier: string): 
     }),
   });
   if (!res.ok) {
-    throw new Error(`Supabase token exchange failed: ${res.status} ${await res.text()}`);
+    // client_secret went out in the Authorization header of this request — this
+    // platform's own OAuth app secret, not per-student. secretSafeHttpError, never
+    // raw res.text(), same reasoning as the Cloudflare token exchange above.
+    throw await secretSafeHttpError("Supabase token exchange", res);
   }
   return res.json();
 }
@@ -89,7 +93,10 @@ export async function createProject(accessToken: string, name: string): Promise<
     }),
   });
   if (!res.ok) {
-    throw new Error(`Supabase project creation failed: ${res.status} ${await res.text()}`);
+    // This request's body carries the freshly generated db_pass for the new
+    // project — a real Postgres superuser credential, even though it's unused
+    // anywhere else. secretSafeHttpError, never raw res.text().
+    throw await secretSafeHttpError("Supabase project creation", res);
   }
   return res.json();
 }

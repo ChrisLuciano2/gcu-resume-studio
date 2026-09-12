@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { secretSafeHttpError } from "./httpError";
 
 // Cloudflare API client: self-managed OAuth (primary) + pasted-token (fallback),
 // KV namespace creation, and Worker deployment with the secret_text/plain_text
@@ -67,7 +68,10 @@ export async function exchangeCodeForToken(code: string, codeVerifier: string): 
     }),
   });
   if (!res.ok) {
-    throw new Error(`Cloudflare token exchange failed: ${res.status} ${await res.text()}`);
+    // This request carries this platform's own OAuth client_secret in the body —
+    // a leak here is worse than a per-student leak, it compromises the whole app's
+    // Cloudflare OAuth registration. secretSafeHttpError, never raw res.text().
+    throw await secretSafeHttpError("Cloudflare token exchange", res);
   }
   return res.json();
 }
@@ -141,7 +145,11 @@ export async function deployWorker(params: WorkerDeployParams): Promise<void> {
     body: form,
   });
   if (!res.ok) {
-    throw new Error(`Cloudflare Worker deploy failed: ${res.status} ${await res.text()}`);
+    // secretSafeHttpError, not `${res.status} ${await res.text()}` — this request's
+    // metadata includes the student's Supabase service-role key as a secret_text
+    // binding value; a validation-error body that happened to echo it back must
+    // never enter this Error's message. See lib/httpError.ts.
+    throw await secretSafeHttpError("Cloudflare Worker deploy", res);
   }
 }
 
