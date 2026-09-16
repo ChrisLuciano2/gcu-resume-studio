@@ -1,42 +1,45 @@
 import { prisma } from "./db";
 import { decryptSecret } from "./crypto";
-import type { StudentSupabase } from "./studentSupabase";
+import type { StudentD1 } from "./studentD1";
 
 export interface StudentContext {
-  supabase: StudentSupabase;
+  d1: StudentD1;
   workerUrl: string;
 }
 
-/** Loads a connected student's Supabase + Worker connection details, decrypted. */
+/** Loads a connected student's D1 + Worker connection details, decrypted. */
 export async function getStudentContext(userId: string): Promise<StudentContext> {
-  const [supabaseConn, cloudflareConn] = await Promise.all([
-    prisma.connection.findUnique({ where: { userId_provider: { userId, provider: "SUPABASE" } } }),
-    prisma.connection.findUnique({ where: { userId_provider: { userId, provider: "CLOUDFLARE" } } }),
-  ]);
+  const connection = await prisma.connection.findUnique({
+    where: { userId_provider: { userId, provider: "CLOUDFLARE" } },
+  });
 
-  if (supabaseConn?.status !== "CONNECTED" || cloudflareConn?.status !== "CONNECTED") {
+  if (connection?.status !== "CONNECTED") {
     throw new NotProvisionedError();
   }
 
-  const supabaseMeta = (supabaseConn.metadataJson as Record<string, unknown> | null) ?? {};
-  const cloudflareMeta = (cloudflareConn.metadataJson as Record<string, unknown> | null) ?? {};
+  const meta = (connection.metadataJson as Record<string, unknown> | null) ?? {};
+  const accountId = meta.accountId as string | undefined;
+  const databaseId = meta.databaseId as string | undefined;
+  const workerUrl = meta.workerUrl as string | undefined;
 
-  const projectUrl = supabaseMeta.projectUrl as string | undefined;
-  const serviceRoleKeyEncrypted = supabaseMeta.serviceRoleKeyEncrypted as string | undefined;
-  const workerUrl = cloudflareMeta.workerUrl as string | undefined;
+  const bearerToken = connection.encryptedAccessToken
+    ? decryptSecret(connection.encryptedAccessToken)
+    : connection.encryptedApiToken
+      ? decryptSecret(connection.encryptedApiToken)
+      : undefined;
 
-  if (!projectUrl || !serviceRoleKeyEncrypted || !workerUrl) {
+  if (!accountId || !databaseId || !workerUrl || !bearerToken) {
     throw new NotProvisionedError();
   }
 
   return {
-    supabase: { projectUrl, serviceRoleKey: decryptSecret(serviceRoleKeyEncrypted) },
+    d1: { accountId, databaseId, bearerToken },
     workerUrl,
   };
 }
 
 export class NotProvisionedError extends Error {
   constructor() {
-    super("Connect and finish provisioning both Supabase and Cloudflare before using this feature");
+    super("Connect Cloudflare and finish provisioning before using this feature");
   }
 }

@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUserId } from "@/lib/auth";
 import { toErrorResponse } from "@/lib/apiError";
 import { getStudentContext } from "@/lib/studentContext";
-import { studentRest } from "@/lib/studentSupabase";
+import { studentD1Query } from "@/lib/studentD1";
 import { tailorChunks } from "@/lib/workerClient";
-import type { DraftRow } from "@/lib/drafts";
+import { MAX_JOB_DESCRIPTION_LENGTH } from "@/lib/jobDescriptionLimit";
+import type { DraftPlan } from "@/lib/drafts";
 
 /**
  * Proposes a rewrite for a target field — never persists anything. The editor's
@@ -17,20 +18,30 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   try {
     const userId = await requireUserId();
     const ctx = await getStudentContext(userId);
-    const { targetField } = await req.json();
+    const { targetField, jobDescription } = await req.json();
     if (typeof targetField !== "string" || !targetField.trim()) {
       return NextResponse.json({ error: "targetField is required" }, { status: 400 });
     }
+    if (jobDescription !== undefined && typeof jobDescription !== "string") {
+      return NextResponse.json({ error: "jobDescription must be a string" }, { status: 400 });
+    }
+    if (jobDescription && jobDescription.length > MAX_JOB_DESCRIPTION_LENGTH) {
+      return NextResponse.json(
+        { error: `jobDescription is too long (max ${MAX_JOB_DESCRIPTION_LENGTH} characters)` },
+        { status: 400 },
+      );
+    }
 
-    const rows = await studentRest<DraftRow[]>(ctx.supabase, `drafts?id=eq.${params.id}&select=plan`);
-    const draft = rows[0];
-    if (!draft) return NextResponse.json({ error: "not found" }, { status: 404 });
+    const rows = await studentD1Query<{ plan: string }>(ctx.d1, "SELECT plan FROM drafts WHERE id = ?", [params.id]);
+    const raw = rows[0];
+    if (!raw) return NextResponse.json({ error: "not found" }, { status: 404 });
+    const plan: DraftPlan = JSON.parse(raw.plan);
 
-    const flatChunks = draft.plan.sections.flatMap((s) =>
+    const flatChunks = plan.sections.flatMap((s) =>
       s.chunks.map((c) => ({ id: c.id, section: s.section, heading: c.heading, meta: c.meta, bullets: c.bullets, tags: c.tags })),
     );
 
-    const result = await tailorChunks(ctx.workerUrl, flatChunks, targetField);
+    const result = await tailorChunks(ctx.workerUrl, flatChunks, targetField, jobDescription || undefined);
     if (!result.ok || !result.plan) {
       // Reason-specific message: "didn't finish in time" was previously shown
       // for every failure mode, including unparseable_ai_response — a real case
@@ -49,9 +60,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     // Re-sectioned using the original chunk->section mapping; the AI only
     // reorders/rewrites bullets and tags, it never invents new section names.
     const sectionBySection = new Map(flatChunks.map((c) => [c.id, c.section]));
-    const proposedSections = groupIntoSections(result.plan, sectionBySection, draft.plan.sections.map((s) => s.section));
+    const proposedSections = groupIntoSections(result.plan, sectionBySection, plan.sections.map((s) => s.section));
 
-    return NextResponse.json({ ok: true, proposedPlan: { sections: proposedSections } });
+    // `header` (candidate name/contact block, used for cover-letter
+    // generation) isn't touched by tailoring at all — carry it through
+    // explicitly, or it silently disappears the first time a draft is
+    // tailored, since this constructs a brand-new plan object rather than
+    // mutating the existing one.
+    return NextResponse.json({ ok: true, proposedPlan: { sections: proposedSections, header: plan.header } });
   } catch (err) {
     return toErrorResponse(err);
   }

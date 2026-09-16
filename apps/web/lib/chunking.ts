@@ -40,6 +40,39 @@ function matchSectionHeading(line: string): string | null {
   return null;
 }
 
+/**
+ * Returns the raw lines before the first recognized section heading — where a
+ * resume's name/contact block lives, and which `chunkResumeText` otherwise
+ * discards entirely (`splitIntoSections` never starts capturing until the
+ * first heading matches). Needed for cover-letter generation, which has
+ * nowhere else to get the candidate's name to sign off with. Returns
+ * `undefined` rather than the whole document when no heading is found
+ * anywhere — that's exactly when `chunkResumeText` falls back to treating
+ * every line as content already, so capturing the same text again as
+ * "header" would just duplicate it into the cover-letter prompt for no
+ * reason — and `undefined` when the very first line is already a heading
+ * (no preamble to capture).
+ */
+export function extractResumeHeader(rawText: string): string | undefined {
+  const lines = rawText
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.trim());
+
+  const preamble: string[] = [];
+  let foundHeading = false;
+  for (const line of lines) {
+    if (matchSectionHeading(line)) {
+      foundHeading = true;
+      break;
+    }
+    if (line) preamble.push(line);
+  }
+
+  if (!foundHeading || preamble.length === 0) return undefined;
+  return preamble.join("\n");
+}
+
 export function chunkResumeText(rawText: string): ResumeChunk[] {
   const lines = rawText
     .replace(/\r\n/g, "\n")

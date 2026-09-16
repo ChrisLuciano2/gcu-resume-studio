@@ -4,7 +4,7 @@ import { toErrorResponse } from "@/lib/apiError";
 import { prisma } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
 import { verifyToken } from "@/lib/cloudflare";
-import { provisionCloudflareWhenReady } from "@/lib/provisioning/orchestrator";
+import { provisionCloudflare } from "@/lib/provisioning/orchestrator";
 
 // Fallback path from the design brief: "Cloudflare's actual integration path may
 // lean toward a scoped API token... build the Cloudflare card flexibly." OAuth is
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    void provisionCloudflareWhenReady(userId).catch((err) => {
+    void provisionCloudflare(userId).catch((err) => {
       console.error("cloudflare provisioning (token path) failed", err);
     });
 

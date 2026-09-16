@@ -1,19 +1,20 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { requireUserId } from "@/lib/auth";
 import { toErrorResponse } from "@/lib/apiError";
 import { getStudentContext } from "@/lib/studentContext";
 import { extractText } from "@/lib/textExtract";
-import { chunkResumeText } from "@/lib/chunking";
+import { chunkResumeText, extractResumeHeader } from "@/lib/chunking";
 import { embedTexts } from "@/lib/workerClient";
 import { createDraft } from "@/lib/drafts";
-import { studentRest, withReturnRepresentation } from "@/lib/studentSupabase";
+import { studentD1Query } from "@/lib/studentD1";
 
 /**
  * Generic across any resume format/major: extract text, chunk it, embed each
  * chunk via the student's own Worker, store chunks + embeddings in the student's
- * own Supabase, and auto-create the default (untailored) draft — the one every
- * student gets with zero effort. This is the route most likely to run before any
- * tailoring handler ever does, so it's also responsible for its own
+ * own D1 database, and auto-create the default (untailored) draft — the one
+ * every student gets with zero effort. This is the route most likely to run
+ * before any tailoring handler ever does, so it's also responsible for its own
  * PublicDraftIndex entry (via lib/drafts.ts's createDraft) — see PLAN.md.
  */
 export async function POST(req: NextRequest) {
@@ -25,6 +26,10 @@ export async function POST(req: NextRequest) {
     const file = form.get("file");
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "a file is required" }, { status: 400 });
+    }
+    const MAX_FILE_BYTES = 10 * 1024 * 1024; // a resume is never legitimately this large
+    if (file.size > MAX_FILE_BYTES) {
+      return NextResponse.json({ error: "that file is too large (max 10MB)" }, { status: 413 });
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
@@ -49,15 +54,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const [resumeRow] = await studentRest<Array<{ id: string }>>(
-      ctx.supabase,
-      "resumes",
-      withReturnRepresentation({ method: "POST", body: JSON.stringify({ raw_text: rawText }) }),
+    const resumeId = randomUUID();
+    await studentD1Query(
+      ctx.d1,
+      "INSERT INTO resumes (id, raw_text, uploaded_at) VALUES (?, ?, ?)",
+      [resumeId, rawText, new Date().toISOString()],
     );
-    if (!resumeRow) throw new Error("Supabase did not return the created resume row");
 
-    const chunkRows = chunks.map((c, i) => ({
-      resume_id: resumeRow.id,
+    const insertedChunks = chunks.map((c, i) => ({
+      id: randomUUID(),
       section: c.section,
       position: c.position,
       heading: c.heading ?? null,
@@ -66,21 +71,25 @@ export async function POST(req: NextRequest) {
       tags: c.tags,
       embedding: embedResult.embeddings![i],
     }));
-    const insertedChunks = await studentRest<Array<{ id: string; section: string; heading: string | null; meta: string | null; bullets: string[]; tags: string[] }>>(
-      ctx.supabase,
-      "resume_chunks",
-      withReturnRepresentation({ method: "POST", body: JSON.stringify(chunkRows) }),
-    );
+    for (const c of insertedChunks) {
+      await studentD1Query(
+        ctx.d1,
+        `INSERT INTO resume_chunks (id, resume_id, section, position, heading, meta, bullets, tags, embedding)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [c.id, resumeId, c.section, c.position, c.heading, c.meta, JSON.stringify(c.bullets), JSON.stringify(c.tags), JSON.stringify(c.embedding)],
+      );
+    }
 
     const sections = groupBySection(insertedChunks);
-    const draft = await createDraft(userId, ctx.supabase, ctx.workerUrl, {
+    const header = extractResumeHeader(rawText);
+    const draft = await createDraft(userId, ctx.d1, ctx.workerUrl, {
       name: "Default resume",
       isDefault: true,
-      plan: { sections },
+      plan: { sections, header },
       sourceUpdatedAt: new Date().toISOString(),
     });
 
-    return NextResponse.json({ ok: true, resumeId: resumeRow.id, draft });
+    return NextResponse.json({ ok: true, resumeId, draft });
   } catch (err) {
     return toErrorResponse(err);
   }

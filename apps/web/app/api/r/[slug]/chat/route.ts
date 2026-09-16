@@ -1,15 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { checkRateLimit, clientIp } from "@/lib/rateLimit";
 
 /**
  * Public chatbot proxy. Resolves the slug via PublicDraftIndex (the only central
  * table that can answer "whose link is this"), then proxies to that student's own
- * Worker `/chat` — which does the actual retrieval scoping, rate limiting, and
- * caching (see worker-template/src/index.js). If the cached `workerUrl` looks
- * stale (a redeploy changed it), fall back to the live value on the owning
- * Connection and refresh the cache, per PLAN.md.
+ * Worker `/chat` — which does the actual retrieval scoping, and caching (see
+ * worker-template/src/index.js). That Worker only enforces an aggregate
+ * per-slug daily budget, with no per-requester throttling, so a single visitor
+ * could burn a student's whole day's budget in seconds; rate-limit per IP here
+ * as well, before it ever reaches the worker.
  */
 export async function POST(req: NextRequest, { params }: { params: { slug: string } }) {
+  if (!checkRateLimit(`chat:${clientIp(req)}`, 10, 60_000)) {
+    return NextResponse.json({ error: "too many requests" }, { status: 429 });
+  }
+
   const index = await prisma.publicDraftIndex.findUnique({ where: { slug: params.slug } });
   if (!index) return NextResponse.json({ error: "not found" }, { status: 404 });
 

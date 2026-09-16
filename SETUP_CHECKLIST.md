@@ -3,17 +3,17 @@
 Everything below is a manual step in someone else's UI. Do them in this order —
 later steps depend on values from earlier ones.
 
-**Status as of 2026-09-16: steps 1–5 all done.** Remaining: the Cloudflare OAuth
-client is still private (only usable by the account that registered it) — it
-needs domain verification before a real student's Cloudflare account can
-authorize against it. See `README.md`'s "Account setup status" for specifics
-(which Supabase org, which scopes, which model ids got confirmed).
+**Status as of 2026-09-16: steps 1–4 all done, D1 confirmed live via the
+paste-a-token path (step 4).** Remaining: the Cloudflare OAuth client is still
+private (only usable by the account that registered it) — it needs domain
+verification before a real student's Cloudflare account can authorize against
+it, and its scopes don't cover D1 (see step 4). See `README.md`'s "Account
+setup status" for specifics (which scopes, which model ids got confirmed).
 
 ## 1. Generate `MASTER_KEY`
 
-This is the AES-256-GCM key that encrypts every OAuth token and every student's
-Supabase service-role key at rest. There's no dashboard for this one — generate it
-locally.
+This is the AES-256-GCM key that encrypts every student's OAuth token / API
+token at rest. There's no dashboard for this one — generate it locally.
 
 1. Open a terminal on your machine (PowerShell or Git Bash both work).
 2. Run:
@@ -25,7 +25,7 @@ locally.
 3. Copy the output (a ~44-character base64 string).
 4. Paste it as `MASTER_KEY=` in `apps/web/.env`.
 5. **Back this value up somewhere outside the repo** (a password manager). If you
-   ever lose it, every encrypted token/key already in the database becomes
+   ever lose it, every encrypted token already in the database becomes
    permanently undecryptable — there's no recovery path, by design.
 
 Also generate a second, separate random value for `SESSION_SECRET` the same way
@@ -38,9 +38,10 @@ This is the **central platform's own** database (accounts + encrypted connection
 tokens only — never resume content). Any managed Postgres works; here's the
 straightforward path:
 
-1. Go to [supabase.com](https://supabase.com) (yes, Supabase again, but this one is
-   *your* project for the platform itself, separate from anything students
-   connect) → sign in → **New project**.
+1. Go to [supabase.com](https://supabase.com) (this is *your* project for
+   hosting the platform's own small central database — unrelated to student
+   resume data, which now lives in each student's own Cloudflare D1, not
+   Supabase; see `README.md`'s note on this) → sign in → **New project**.
 2. Pick an organization, name it something like `resume-studio-platform`, set a
    database password (save it), pick a region close to you, click **Create new
    project**. Wait ~2 minutes for it to provision.
@@ -62,40 +63,11 @@ straightforward path:
 identically; just get its connection URI into `DATABASE_URL` and run the same
 `prisma migrate dev` command.)
 
-## 3. Register the Supabase OAuth app
+## 3. Register the Cloudflare self-managed OAuth client
 
-This lets the platform create/manage **student** Supabase projects on their
-behalf via OAuth — separate from the platform's own database in step 2.
-
-1. Go to [supabase.com/dashboard](https://supabase.com/dashboard) and sign in
-   with the account/organization that should own newly created student projects
-   (create a dedicated org for this if you don't want student projects mixed in
-   with your personal ones — recommended).
-2. Click your organization name (top left) → **Organization settings**.
-3. In the left sidebar, click **OAuth Apps**.
-4. Click **Add application** (top right).
-5. Fill in:
-   - **Name**: something like `GCU Resume Studio`
-   - **Website URL**: your app's URL (`http://localhost:3000` for local dev)
-   - **Redirect URL**: exactly `http://localhost:3000/api/connections/supabase/callback`
-     for local dev, or your real domain's equivalent in production — this must
-     match `SUPABASE_OAUTH_REDIRECT_URI` in `.env` byte-for-byte.
-6. Click **Confirm** / **Create**.
-7. Copy the resulting **Client ID** and **Client Secret** (the secret is only
-   shown once — copy it now) into `apps/web/.env`:
-   ```
-   SUPABASE_OAUTH_CLIENT_ID="..."
-   SUPABASE_OAUTH_CLIENT_SECRET="..."
-   ```
-8. Find your organization's ID: still in **Organization settings** → **General**,
-   copy the **Organization ID** shown there (looks like `org_xxxxxxxxxxxx`) into
-   `SUPABASE_ORG_ID=` in `.env`. This is the org new student projects get created
-   under when they connect.
-
-## 4. Register the Cloudflare self-managed OAuth client
-
-This is the newer (June 2026) mechanism this build uses as the *primary*
-Cloudflare connection path (pasted API token is the fallback, already built).
+This is the *primary* Cloudflare connection path (pasted API token, covered in
+step 4, is the fallback — and currently the only path that reaches D1, see
+below).
 
 1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) and sign in with the
    account that should own the OAuth client registration (this can be your own
@@ -127,6 +99,15 @@ Cloudflare connection path (pasted API token is the fallback, already built).
      off in this UI, copy those exact string values back into that constant in
      the code before relying on it — don't assume the code already has the right
      ones.
+
+     **D1 is not in this list on purpose.** Confirmed live 2026-09-16: this
+     OAuth client's current scopes get a 401 on every D1 endpoint, and the
+     exact scope slug D1 would need isn't documented anywhere findable. If you
+     want to try adding it anyway, look for a "D1" entry in this same scope
+     picker and check it — then re-test via a fresh reconnect. If it doesn't
+     work or you'd rather not chase it, that's fine: the app already falls back
+     to the paste-a-token path (step 4) for D1, and every student can use that
+     regardless of what this OAuth client can do.
 6. Save/create the client. It starts **private** (usable only by your own account)
    — that's fine for development; you'd need to verify a domain to make it
    **public** for other Cloudflare accounts (i.e., actual students) to authorize
@@ -138,23 +119,48 @@ Cloudflare connection path (pasted API token is the fallback, already built).
    CLOUDFLARE_OAUTH_CLIENT_SECRET="..."
    ```
 
+## 4. The paste-a-token fallback (needed for D1 until/unless step 3's OAuth client covers it)
+
+Every student can use this path instead of OAuth, and it's the only
+confirmed-working path to D1 access right now. It's the same "Connect
+Cloudflare" screen — there's a "paste a scoped API token" option below the
+OAuth button.
+
+To create a token (yourself, for testing, or hand these steps to a student):
+
+1. Go to **dash.cloudflare.com** and sign in.
+2. Click your profile icon (top right) → **My Profile**.
+3. Left sidebar → **API Tokens** → **Create Token**.
+4. Scroll to the bottom → **Create Custom Token** (skip the templates).
+5. Name it (e.g. `resume-studio`).
+6. Under **Permissions**, add three rows:
+   - `Account` → `Workers Scripts` → `Edit`
+   - `Account` → `Workers KV Storage` → `Edit`
+   - `Account` → `D1` → `Edit`
+7. Under **Account Resources**, select the specific account this token should
+   apply to (not "All accounts").
+8. Leave **Zone Resources** alone — not needed.
+9. **Continue to summary** → confirm the three permissions are listed →
+   **Create Token**.
+10. Copy the token (shown once) and paste it into the connect screen's
+    "paste a scoped API token" field.
+
 ## 5. Confirm the Workers AI model id
 
 Separate from the OAuth setup, but also a "go check a live source" item:
 `worker-template/src/index.js`'s `TEXT_MODEL` constant currently points at
-`@cf/meta/llama-3.1-8b-instruct`. Before relying on it:
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast`. Before relying on it:
 
 1. Go to [developers.cloudflare.com/workers-ai/models/](https://developers.cloudflare.com/workers-ai/models/).
-2. Confirm that model id is still listed (not deprecated) — there was a
-   deprecation wave in May 2026, so double check rather than assuming.
+2. Confirm that model id is still listed (not deprecated) — the catalog churns,
+   so double check rather than assuming.
 3. If it's gone, pick a similarly-sized current instruction-tuned model from that
    page and update `TEXT_MODEL` in `worker-template/src/index.js`.
 
-## After all five: restart the app
+## After steps 1–3: restart the app
 
 Once `.env` has real values for `MASTER_KEY`, `SESSION_SECRET`, `DATABASE_URL`,
-`SUPABASE_OAUTH_CLIENT_ID`/`SECRET`/`SUPABASE_ORG_ID`, and
-`CLOUDFLARE_OAUTH_CLIENT_ID`/`SECRET`:
+and `CLOUDFLARE_OAUTH_CLIENT_ID`/`SECRET`:
 
 ```
 cd apps/web

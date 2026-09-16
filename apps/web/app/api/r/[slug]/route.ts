@@ -1,36 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
-import { studentRest } from "@/lib/studentSupabase";
-import type { DraftRow } from "@/lib/drafts";
+import { getPublicDraftBySlug } from "@/lib/publicDraft";
+import { checkRateLimit, clientIp } from "@/lib/rateLimit";
 
 /**
- * Public recruiter-facing route. A recruiter link carries only a slug — this is
- * the ONLY place in the central DB that maps a bare slug back to a student
- * (PublicDraftIndex), since all draft content lives in the student's own
- * Supabase. Serves exactly that one draft's locked `plan`, never another
- * draft's or another student's content.
+ * JSON API for a recruiter link — thin wrapper around lib/publicDraft.ts's
+ * shared lookup (also used directly by the server-rendered app/r/[slug]/page.tsx
+ * so that page doesn't pay for an extra internal HTTP round-trip). Kept as its
+ * own route for the chat widget and any future API consumers.
  */
-export async function GET(_req: NextRequest, { params }: { params: { slug: string } }) {
-  const index = await prisma.publicDraftIndex.findUnique({ where: { slug: params.slug } });
-  if (!index) return NextResponse.json({ error: "not found" }, { status: 404 });
-
-  const supabaseConn = await prisma.connection.findUnique({
-    where: { userId_provider: { userId: index.userId, provider: "SUPABASE" } },
-  });
-  const meta = (supabaseConn?.metadataJson as Record<string, unknown> | null) ?? {};
-  const projectUrl = meta.projectUrl as string | undefined;
-  const serviceRoleKeyEncrypted = meta.serviceRoleKeyEncrypted as string | undefined;
-  if (!projectUrl || !serviceRoleKeyEncrypted) {
-    return NextResponse.json({ error: "not found" }, { status: 404 });
+export async function GET(req: NextRequest, { params }: { params: { slug: string } }) {
+  if (!checkRateLimit(`r:${clientIp(req)}`, 30, 60_000)) {
+    return NextResponse.json({ error: "too many requests" }, { status: 429 });
   }
 
-  const rows = await studentRest<DraftRow[]>(
-    { projectUrl, serviceRoleKey: decryptSecret(serviceRoleKeyEncrypted) },
-    `drafts?slug=eq.${encodeURIComponent(params.slug)}&select=name,category,niche,plan,updated_at`,
-  );
-  const draft = rows[0];
-  if (!draft) return NextResponse.json({ error: "not found" }, { status: 404 });
-
-  return NextResponse.json({ draft, chatUrl: `/api/r/${params.slug}/chat` });
+  const result = await getPublicDraftBySlug(params.slug);
+  if (!result) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return NextResponse.json(result);
 }

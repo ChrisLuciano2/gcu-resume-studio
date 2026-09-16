@@ -24,7 +24,6 @@ model User {
 }
 
 enum Provider {
-  SUPABASE
   CLOUDFLARE
 }
 
@@ -57,8 +56,7 @@ model Connection {
   providerAccountId String? // Supabase org id / Cloudflare account id
   oauthStateNonce   String? // pending-flow CSRF nonce, cleared once the callback lands
 
-  // { projectRef, projectUrl, anonKey, serviceRoleKeyEncrypted, workerUrl,
-  //   kvNamespaceId, accountId, workerScriptName }
+  // { accountId, databaseId, kvNamespaceId, workerUrl, workerScriptName }
   metadataJson Json?
 
   lastError String?

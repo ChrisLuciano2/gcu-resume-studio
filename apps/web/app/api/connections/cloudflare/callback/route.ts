@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
 import { consumePendingOAuth } from "@/lib/oauthState";
 import { exchangeCodeForToken } from "@/lib/cloudflare";
-import { provisionCloudflareWhenReady } from "@/lib/provisioning/orchestrator";
+import { provisionCloudflare } from "@/lib/provisioning/orchestrator";
 import { closeTabHtml } from "@/lib/closeTabHtml";
 
 export async function GET(req: NextRequest) {
@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    void provisionCloudflareWhenReady(pending.userId).catch((err) => {
+    void provisionCloudflare(pending.userId).catch((err) => {
       console.error("cloudflare provisioning failed", err);
     });
 

@@ -16,11 +16,8 @@ export async function POST(req: NextRequest) {
   const user = await prisma.user.create({
     data: { email, passwordHash: hashPassword(password) },
   });
-  await prisma.connection.createMany({
-    data: [
-      { userId: user.id, provider: "SUPABASE", status: "NOT_CONNECTED" },
-      { userId: user.id, provider: "CLOUDFLARE", status: "NOT_CONNECTED" },
-    ],
+  await prisma.connection.create({
+    data: { userId: user.id, provider: "CLOUDFLARE", status: "NOT_CONNECTED" },
   });
 
   await createSession(user.id);

@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { JOB_CATEGORIES, type JobCategory } from "@/lib/jobFields";
+import { MAX_JOB_DESCRIPTION_LENGTH } from "@/lib/jobDescriptionLimit";
 import type { DraftPlan, DraftRow } from "@/lib/drafts";
 
 type DraftSummary = Pick<DraftRow, "id" | "name" | "category" | "niche" | "is_default">;
@@ -35,7 +36,22 @@ function EditorPageInner() {
   const [dragOver, setDragOver] = useState(false);
   const [rewriting, setRewriting] = useState(false);
   const [rewriteError, setRewriteError] = useState<string | null>(null);
-  const [proposal, setProposal] = useState<{ plan: DraftPlan; category: string; niche?: string; label: string } | null>(null);
+  const [proposal, setProposal] = useState<{ plan: DraftPlan; category: string; niche?: string; label: string; jobDescription: string } | null>(null);
+  // The pasted job posting for the CURRENTLY LOADED draft — reset (not just
+  // filled-if-present) every time a different draft loads, from that draft's
+  // own persisted `job_description`, so switching drafts can't leak one
+  // draft's pasted posting into another's textarea.
+  const [jobDescription, setJobDescription] = useState("");
+  // Cover letter: `coverLetter` is whatever's in the textarea right now
+  // (saved letter, a fresh AI proposal, or an unsaved hand edit — all the
+  // same textbox); `savedCoverLetter` is only ever set to what's actually
+  // persisted, so comparing the two tells us whether there are unsaved
+  // changes Generate would silently discard.
+  const [coverLetter, setCoverLetter] = useState("");
+  const [savedCoverLetter, setSavedCoverLetter] = useState("");
+  const [generatingLetter, setGeneratingLetter] = useState(false);
+  const [letterError, setLetterError] = useState<string | null>(null);
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false);
   const [editingChunkId, setEditingChunkId] = useState<string | null>(null);
   const [editBuffer, setEditBuffer] = useState<{ bullets: string[]; tags: string }>({ bullets: [], tags: "" });
   // Ephemeral, per-session status cues (not persisted) for which chunks the most
@@ -66,6 +82,11 @@ function EditorPageInner() {
     }
     const body = await res.json();
     setDraft(body.draft);
+    setJobDescription(body.draft.job_description ?? "");
+    setCoverLetter(body.draft.cover_letter ?? "");
+    setSavedCoverLetter(body.draft.cover_letter ?? "");
+    setLetterError(null);
+    setConfirmRegenerate(false);
   }, []);
 
   useEffect(() => {
@@ -111,14 +132,20 @@ function EditorPageInner() {
       const res = await fetch(`/api/drafts/${draft.id}/tailor`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetField: payload.niche ?? payload.label }),
+        body: JSON.stringify({ targetField: payload.niche ?? payload.label, jobDescription: jobDescription.trim() || undefined }),
       });
       const body = await res.json();
       if (!res.ok || !body.ok) {
         setRewriteError(body.message ?? "The rewrite didn't finish in time — try again.");
         return;
       }
-      setProposal({ plan: body.proposedPlan, category: payload.category, niche: payload.niche, label: payload.label });
+      setProposal({
+        plan: body.proposedPlan,
+        category: payload.category,
+        niche: payload.niche,
+        label: payload.label,
+        jobDescription: jobDescription.trim(),
+      });
     } catch {
       setRewriteError("Couldn't reach the rewrite service — try again.");
     } finally {
@@ -137,6 +164,7 @@ function EditorPageInner() {
         category: proposal.category,
         niche: proposal.niche,
         name: mode === "new" ? `${draft.name} — ${proposal.label}` : undefined,
+        jobDescription: proposal.jobDescription || undefined,
       }),
     });
     const body = await res.json();
@@ -208,6 +236,68 @@ function EditorPageInner() {
     }
   }
 
+  async function generateCoverLetter() {
+    if (!draft || generatingLetter) return;
+    // Same "asked every time, so nothing overwrites silently" principle the
+    // resume-tailor flow already uses — this textarea can hold an unsaved
+    // hand edit or a previous unsaved proposal, and Generate would otherwise
+    // discard it without warning.
+    if (coverLetter !== savedCoverLetter && !confirmRegenerate) {
+      setConfirmRegenerate(true);
+      return;
+    }
+    setConfirmRegenerate(false);
+    setGeneratingLetter(true);
+    setLetterError(null);
+    try {
+      const res = await fetch(`/api/drafts/${draft.id}/cover-letter`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobDescription: jobDescription.trim() || undefined }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) {
+        setLetterError(body.message ?? "The cover letter didn't finish in time — try again.");
+        return;
+      }
+      setCoverLetter(body.letter);
+    } catch {
+      setLetterError("Couldn't reach the rewrite service — try again.");
+    } finally {
+      setGeneratingLetter(false);
+    }
+  }
+
+  async function saveCoverLetter() {
+    if (!draft) return;
+    const res = await fetch(`/api/drafts/${draft.id}/cover-letter`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ letter: coverLetter }),
+    });
+    if (res.ok) {
+      setSavedCoverLetter(coverLetter);
+      setLetterError(null);
+    } else {
+      setLetterError("Couldn't save that — try again.");
+    }
+  }
+
+  async function copyCoverLetter() {
+    await navigator.clipboard.writeText(coverLetter);
+  }
+
+  function downloadCoverLetter() {
+    if (!draft) return;
+    const blob = new Blob([coverLetter], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${draft.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-cover-letter.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function toggleCategory(id: string) {
     setOpenCategories((prev) => {
       const next = new Set(prev);
@@ -244,6 +334,27 @@ function EditorPageInner() {
       <p style={{ fontSize: 15, lineHeight: 1.55, color: "var(--ink-2)", margin: "12px 0 32px" }}>
         Drag a job field onto your resume to tailor it, or click one. The rewrite runs on your own Workers AI quota.
       </p>
+
+      <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "16px 18px", marginBottom: 24 }}>
+        <label
+          htmlFor="job-description"
+          className="mono"
+          style={{ display: "block", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 8 }}
+        >
+          Paste the job posting (optional)
+        </label>
+        <textarea
+          id="job-description"
+          value={jobDescription}
+          onChange={(e) => setJobDescription(e.target.value.slice(0, MAX_JOB_DESCRIPTION_LENGTH))}
+          rows={4}
+          placeholder="Paste the actual job posting text here for a more precise match — the tailor step below will emphasize this posting's specific requirements and keywords, not just the broad category."
+          style={{ width: "100%", fontSize: 13, lineHeight: 1.6, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 4, resize: "vertical" }}
+        />
+        <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 6, textAlign: "right" }}>
+          {jobDescription.length} / {MAX_JOB_DESCRIPTION_LENGTH}
+        </div>
+      </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "clamp(16px, 2vw, 28px)", alignItems: "flex-start" }}>
         {/* Job fields sidebar */}
@@ -475,6 +586,77 @@ function EditorPageInner() {
               );
             })}
           </div>
+        </div>
+      </div>
+
+      <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "18px 20px", marginTop: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span className="mono" style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-3)" }}>
+            Cover letter
+          </span>
+          <div style={{ flex: 1 }} />
+          {generatingLetter && (
+            <span
+              className="mono"
+              style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 11, color: "var(--purple)", padding: "5px 10px", border: "1px solid #DCCDF4", background: "var(--purple-tint)", borderRadius: 999 }}
+            >
+              <TypingDots />
+              <span>Writing…</span>
+            </span>
+          )}
+        </div>
+        <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--ink-2)", margin: "8px 0 14px" }}>
+          Uses this draft&rsquo;s current field ({draft.niche ?? draft.category ?? "none set yet"}) and the job posting
+          above, if you pasted one.
+        </p>
+
+        {confirmRegenerate && (
+          <div className="rise-in" style={{ border: "1px solid #DCCDF4", background: "var(--purple-tint)", borderRadius: 6, padding: "12px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13 }}>This will replace your unsaved changes below — generate anyway?</span>
+            <button onClick={generateCoverLetter} className="btn-primary" style={{ ...primaryBtn, padding: "6px 12px", fontSize: 12 }}>
+              Generate anyway
+            </button>
+            <button onClick={() => setConfirmRegenerate(false)} className="btn-ghost" style={textBtn}>
+              cancel
+            </button>
+          </div>
+        )}
+
+        {letterError && <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{letterError}</p>}
+
+        <textarea
+          value={coverLetter}
+          onChange={(e) => {
+            setCoverLetter(e.target.value);
+            setConfirmRegenerate(false);
+          }}
+          rows={10}
+          placeholder="Click Generate to write a first draft from this resume, or write your own here."
+          style={{ width: "100%", fontSize: 14, lineHeight: 1.6, padding: "12px 14px", border: "1px solid var(--line)", borderRadius: 4, resize: "vertical" }}
+        />
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={generateCoverLetter} disabled={generatingLetter} className="btn-primary" style={primaryBtn}>
+            {generatingLetter ? "Writing…" : coverLetter ? "Regenerate" : "Generate"}
+          </button>
+          <button
+            onClick={saveCoverLetter}
+            disabled={coverLetter === savedCoverLetter}
+            className="btn-outline"
+            style={outlineBtn}
+          >
+            Save
+          </button>
+          <button onClick={copyCoverLetter} disabled={!coverLetter} className="btn-outline" style={outlineBtn}>
+            Copy to clipboard
+          </button>
+          <button onClick={downloadCoverLetter} disabled={!coverLetter} className="btn-outline" style={outlineBtn}>
+            Download as .txt
+          </button>
+          {coverLetter !== savedCoverLetter && (
+            <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
+              unsaved changes
+            </span>
+          )}
         </div>
       </div>
     </div>

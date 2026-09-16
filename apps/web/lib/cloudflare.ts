@@ -23,6 +23,16 @@ const API_BASE = "https://api.cloudflare.com/client/v4";
 // is inferred from the matching category name rather than independently
 // confirmed. If the OAuth authorize redirect ever comes back with an invalid_scope
 // error, this is the first thing to re-check.
+//
+// Deliberately does NOT include a D1 scope. Confirmed live 2026-09-16: these four
+// scopes get a 401 "Authentication error" on every D1 endpoint (create database,
+// query), and the exact dot-notation slug D1 would need isn't documented anywhere
+// findable — guessing wrong here would break every student's OAuth connection with
+// invalid_scope, for a system nobody will be around to debug. Provisioning gets its
+// D1 access from the pasted-API-token fallback path instead (see connect/page.tsx
+// and verifyToken below), where a student picks "D1:Edit" by name in Cloudflare's
+// own token UI — no scope-slug guessing involved. If someone later confirms the
+// right OAuth scope slug, it can be added here.
 export const CLOUDFLARE_OAUTH_SCOPES = [
   "user-details.read",
   "account-settings.read",
@@ -117,25 +127,97 @@ export async function createKvNamespace(
   return res.result;
 }
 
+export async function createD1Database(
+  bearerToken: string,
+  accountId: string,
+  name: string,
+): Promise<{ uuid: string }> {
+  const res = await cfFetch(bearerToken, `/accounts/${accountId}/d1/database`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  return res.result;
+}
+
+export interface D1QueryResult<T> {
+  results: T[];
+}
+
+/**
+ * Runs one SQL statement against a student's D1 database. One statement per
+ * call — confirmed live 2026-09-16 this is how the API is meant to be used
+ * (each call's `result` is a single-element array, one entry per statement
+ * sent). Always parameterized (`params`, `?` placeholders) — never build SQL
+ * by interpolating a caller-supplied string, the whole point of this helper
+ * existing is to not repeat that mistake at each of the ~9 call sites that
+ * used to build PostgREST path strings by hand.
+ */
+export async function d1Query<T = unknown>(
+  bearerToken: string,
+  accountId: string,
+  databaseId: string,
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const res = await fetch(`${API_BASE}/accounts/${accountId}/d1/database/${databaseId}/query`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${bearerToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ sql, params }),
+  });
+  const body = await res.json();
+  if (!res.ok || body.success === false) {
+    // Confirmed live: a bad statement's error body is just { code, message } —
+    // no secret ever appears in a D1 query error, since the query text is SQL
+    // this app wrote, not third-party-echoed request data. Safe to include here.
+    throw new Error(`D1 query failed: ${res.status} ${JSON.stringify(body.errors ?? body)}`);
+  }
+  const result = body.result?.[0] as D1QueryResult<T> | undefined;
+  return result?.results ?? [];
+}
+
+/**
+ * Idempotently adds a column to an already-provisioned student's D1 database.
+ * Needed because `ALTER TABLE ... ADD COLUMN` has no `IF NOT EXISTS` in SQLite
+ * (unlike `CREATE TABLE IF NOT EXISTS`, which every schema.sql statement uses)
+ * — re-running a bare ALTER against a database that already has the column
+ * throws "duplicate column name". The orchestrator's schema step reruns on
+ * every `provisionCloudflare` call, including a reconnect of an
+ * already-provisioned student, so a schema change added after some students
+ * already exist needs this rather than a raw ALTER in schema.sql.
+ */
+export async function ensureColumn(
+  bearerToken: string,
+  accountId: string,
+  databaseId: string,
+  table: string,
+  column: string,
+  definition: string,
+): Promise<void> {
+  const columns = await d1Query<{ name: string }>(bearerToken, accountId, databaseId, `PRAGMA table_info(${table})`);
+  if (columns.some((c) => c.name === column)) return;
+  await d1Query(bearerToken, accountId, databaseId, `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
 export interface WorkerDeployParams {
   bearerToken: string;
   accountId: string;
   scriptName: string;
   moduleSource: string; // the Worker's compiled/bundled JS
   kvNamespaceId: string;
-  /** Public, non-sensitive — bound as plain_text. */
-  supabaseUrl: string;
-  /** Bypasses row-level security — MUST be bound as secret_text, never plain_text. */
-  supabaseServiceKey: string;
+  databaseId: string; // D1 database this Worker's DB binding points at
   dailyChatBudget: number;
 }
 
 /**
- * Deploys the Worker template via a multipart module upload. The critical detail
- * (see PLAN.md): SUPABASE_URL is a plain_text binding (just a public project URL),
- * but SUPABASE_SERVICE_KEY is a secret_text binding — Cloudflare stores it encrypted
- * and never echoes it back on subsequent reads, unlike a plain_text var which is
- * visible in the dashboard and in GET responses on the script's bindings.
+ * Deploys the Worker template via a multipart module upload. Bindings: Workers AI,
+ * the per-student KV namespace (chat rate-limit/cache counters), and the
+ * per-student D1 database (resumes/drafts/chat_cache — see
+ * lib/provisioning/schema.sql). Unlike the Supabase-era version of this function,
+ * there's no secret_text binding here at all: D1/KV access from inside the Worker
+ * is authorized by the binding itself, not a credential the Worker code has to
+ * hold — nothing here is sensitive enough to need secretSafeHttpError's redaction,
+ * though the failure path below still doesn't echo the raw response body, since a
+ * validation-error response could in principle echo back the module source.
  */
 export async function deployWorker(params: WorkerDeployParams): Promise<void> {
   const metadata = {
@@ -144,8 +226,7 @@ export async function deployWorker(params: WorkerDeployParams): Promise<void> {
     bindings: [
       { type: "ai", name: "AI" },
       { type: "kv_namespace", name: "CHAT_KV", namespace_id: params.kvNamespaceId },
-      { type: "plain_text", name: "SUPABASE_URL", text: params.supabaseUrl },
-      { type: "secret_text", name: "SUPABASE_SERVICE_KEY", text: params.supabaseServiceKey },
+      { type: "d1", name: "DB", database_id: params.databaseId },
       { type: "plain_text", name: "DAILY_CHAT_BUDGET", text: String(params.dailyChatBudget) },
     ],
   };
@@ -160,11 +241,7 @@ export async function deployWorker(params: WorkerDeployParams): Promise<void> {
     body: form,
   });
   if (!res.ok) {
-    // secretSafeHttpError, not `${res.status} ${await res.text()}` — this request's
-    // metadata includes the student's Supabase service-role key as a secret_text
-    // binding value; a validation-error body that happened to echo it back must
-    // never enter this Error's message. See lib/httpError.ts.
-    throw await secretSafeHttpError("Cloudflare Worker deploy", res);
+    throw new Error(`Cloudflare Worker deploy failed: ${res.status} ${await res.text()}`);
   }
 }
 

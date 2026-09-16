@@ -1,6 +1,44 @@
 # GCU Resume Studio — backend implementation plan
 
-## Context
+## Update (2026-09-16): Supabase replaced with Cloudflare D1
+
+Everything below describes the **original** architecture, kept as-is for the
+history/reasoning trail rather than rewritten to pretend it was always this
+way. As of 2026-09-16, the per-student data store changed from a
+Supabase/Postgres/pgvector project to a Cloudflare D1 (SQLite) database, and
+every `Connection(provider: SUPABASE)` row / Supabase OAuth flow described
+below no longer exists in the code. The reasoning, in short (see the approved
+migration plan at `C:\Users\17143\.claude\plans\reflective-jumping-mochi.md`
+for the full writeup):
+
+- The one thing Postgres/pgvector actually offered over SQLite — ANN vector
+  search — was never used. Retrieval only ever ranks a handful of chunks for
+  one resume, so `worker-template/src/index.js` always computed cosine
+  similarity in plain JS over chunks fetched by known id, not via a real
+  vector index. Dropping Postgres cost nothing functionally.
+- Two developer-platform OAuth connections (Supabase *and* Cloudflare) before
+  a student could do anything was the single biggest onboarding-friction risk
+  identified in a later product review of this codebase. One connection
+  (Cloudflare only, now provisioning a D1 database instead of a Supabase
+  project) is a meaningfully smaller ask.
+- Driven by a real constraint: this project's original author graduates in
+  December 2026 and wants it to run afterward with no ongoing maintainer, no
+  shared bill, and no one inheriting an AI-quota/abuse problem. Per-student
+  BYO-infra stays (each student still owns their own data and compute, on
+  their own free account) — it's just down to one provider instead of two.
+
+Everything student-data-related now lives in D1: `apps/web/lib/provisioning/schema.sql`
+(SQLite dialect — see that file's header for the specific type/dialect changes),
+`apps/web/lib/studentD1.ts` (replaces `lib/studentSupabase.ts`),
+`apps/web/lib/cloudflare.ts`'s `createD1Database`/`d1Query` (replaces
+`lib/supabaseManagement.ts`, deleted), and `worker-template/src/index.js`'s D1
+binding (`env.DB`, replaces its Supabase REST calls). The central Postgres DB
+(`Connection`, `User`, `ProvisioningRun`, `PublicDraftIndex`) is unaffected —
+that was never the thing being replaced. A public resume website
+(`app/r/[slug]/page.tsx`) with a native-browser print/PDF version was added at
+the same time, on top of the new D1 data layer.
+
+## Context (original, 2026-09 — describes the Supabase-based architecture this project started with)
 
 The design brief (`student-tool-design-brief.md`) and the imported Claude Design file (`Connect Accounts.dc.html`, GCU purple `#522398` / IBM Plex dev-tool system) spec a resume-tailoring tool where **each student runs their own infrastructure** — their own Supabase project (data) and Cloudflare account (compute + Workers AI) — so no student's chatbot usage is capped by another student's traffic. This plan builds the backend that makes that real: account provisioning, ingestion, tailoring, and the public per-draft chatbot.
 

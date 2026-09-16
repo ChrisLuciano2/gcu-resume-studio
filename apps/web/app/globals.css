@@ -221,3 +221,23 @@ code,
   text-transform: uppercase;
   color: var(--ink-3);
 }
+
+/* Public resume page (app/r/[slug]/page.tsx): the browser's own print dialog
+   IS the PDF pipeline here — deliberately no server-side rendering, see that
+   page's header comment. .print-hide covers anything that only makes sense on
+   screen (the print button itself, the chat widget) and the @media print block
+   below turns the page into resume-appropriate margins/typography instead of
+   the on-screen 720px reading column. */
+@media print {
+  .print-hide {
+    display: none !important;
+  }
+  body {
+    background: var(--white);
+  }
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}

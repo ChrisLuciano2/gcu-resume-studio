@@ -37,6 +37,6 @@ describe("toErrorResponse: the chokepoint every unexpected route error passes th
     const res = toErrorResponse(new NotProvisionedError());
     const body = await res.json();
     expect(res.status).toBe(409);
-    expect(body.error).toMatch(/Connect and finish provisioning/);
+    expect(body.error).toMatch(/Connect Cloudflare and finish provisioning/);
   });
 });

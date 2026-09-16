@@ -70,16 +70,15 @@ describe("pure helpers", () => {
   });
 });
 
-describe("/chat rate limiting and caching (mocked AI/KV/Supabase)", () => {
-  const SUPABASE_URL = "https://fake-project.supabase.co";
+describe("/chat rate limiting and caching (mocked AI/KV/D1)", () => {
   let kvStore;
+  let cachedAnswers;
   let env;
 
   beforeEach(() => {
     kvStore = new Map();
+    cachedAnswers = new Map();
     env = {
-      SUPABASE_URL,
-      SUPABASE_SERVICE_KEY: "fake-service-key",
       DAILY_CHAT_BUDGET: "2",
       AI: {
         run: vi.fn(async (model) => {
@@ -93,33 +92,54 @@ describe("/chat rate limiting and caching (mocked AI/KV/Supabase)", () => {
           kvStore.set(key, value);
         }),
       },
+      // Fake D1 binding — mirrors the real prepare().bind().first()/.all()/.run()
+      // shape (https://developers.cloudflare.com/d1/best-practices/local-development/#isolate-storage-per-test-file)
+      // closely enough for these tests without needing a real database.
+      DB: {
+        prepare: vi.fn((sql) => makeFakeStatement(sql, { cachedAnswers })),
+      },
     };
-
-    global.fetch = vi.fn(async (url, init) => {
-      const u = String(url);
-      if (u.includes("/rest/v1/drafts?slug=eq.")) {
-        return jsonResponse([{ id: "draft-1", slug: "jane-nursing" }]);
-      }
-      if (u.includes("/rest/v1/drafts?id=eq.")) {
-        return jsonResponse([{ plan: [{ id: "chunk-1" }] }]);
-      }
-      if (u.includes("/rest/v1/resume_chunks")) {
-        return jsonResponse([
-          { id: "chunk-1", section: "Experience", heading: "RN, Mercy Hospital", bullets: ["Led triage"], embedding: [1, 0, 0] },
-        ]);
-      }
-      if (u.includes("/rest/v1/chat_cache") && (!init || init.method !== "POST")) {
-        return jsonResponse([]);
-      }
-      if (u.includes("/rest/v1/chat_cache") && init?.method === "POST") {
-        return jsonResponse({});
-      }
-      throw new Error(`unexpected fetch to ${u}`);
-    });
   });
 
-  function jsonResponse(body) {
-    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  function makeFakeStatement(sql, { cachedAnswers }) {
+    let boundArgs = [];
+    const statement = {
+      bind: (...args) => {
+        boundArgs = args;
+        return statement;
+      },
+      first: async () => {
+        if (sql.includes("FROM drafts WHERE slug")) {
+          return boundArgs[0] === "jane-nursing" ? { id: "draft-1", slug: "jane-nursing" } : null;
+        }
+        if (sql.includes("SELECT plan FROM drafts")) {
+          return boundArgs[0] === "draft-1" ? { plan: JSON.stringify([{ id: "chunk-1" }]) } : null;
+        }
+        if (sql.includes("FROM chat_cache")) {
+          const [draftId, questionHash] = boundArgs;
+          return cachedAnswers.has(`${draftId}:${questionHash}`) ? { answer: cachedAnswers.get(`${draftId}:${questionHash}`) } : null;
+        }
+        throw new Error(`unexpected D1 .first() for: ${sql}`);
+      },
+      all: async () => {
+        if (sql.includes("FROM resume_chunks")) {
+          const results = boundArgs.includes("chunk-1")
+            ? [{ id: "chunk-1", section: "Experience", heading: "RN, Mercy Hospital", bullets: JSON.stringify(["Led triage"]), embedding: JSON.stringify([1, 0, 0]) }]
+            : [];
+          return { results };
+        }
+        throw new Error(`unexpected D1 .all() for: ${sql}`);
+      },
+      run: async () => {
+        if (sql.includes("INSERT INTO chat_cache")) {
+          const [draftId, questionHash, answer] = boundArgs;
+          cachedAnswers.set(`${draftId}:${questionHash}`, answer);
+          return { success: true };
+        }
+        throw new Error(`unexpected D1 .run() for: ${sql}`);
+      },
+    };
+    return statement;
   }
 
   async function chat(question, slug = "jane-nursing") {
@@ -153,9 +173,156 @@ describe("/chat rate limiting and caching (mocked AI/KV/Supabase)", () => {
     // from its locked plan — assert the filter was actually applied, not a bare
     // "all chunks" query.
     await chat("anything");
-    const chunkCall = global.fetch.mock.calls.find(([url]) => String(url).includes("/resume_chunks"));
-    expect(chunkCall[0]).toContain("id=in.");
-    expect(chunkCall[0]).toContain("chunk-1");
+    const chunkPrepareCall = env.DB.prepare.mock.calls.find(([sql]) => sql.includes("FROM resume_chunks"));
+    expect(chunkPrepareCall[0]).toContain("WHERE id IN");
+  });
+});
+
+describe("/tailor: job-description-based tailoring", () => {
+  const chunks = [{ id: "1", section: "Experience", bullets: ["Did a thing"], tags: [] }];
+
+  function makeEnv() {
+    return {
+      AI: { run: vi.fn(async () => ({ response: { plan: [{ id: "1", bullets: ["Did a thing"], tags: [] }] } })) },
+    };
+  }
+
+  async function tailorWith(body) {
+    const req = new Request("https://worker.example/tailor", {
+      method: "POST",
+      body: JSON.stringify({ chunks, targetField: "Nursing", ...body }),
+    });
+    return worker.fetch(req, makeEnv());
+  }
+
+  it("includes the job description text in the prompt sent to the model when provided", async () => {
+    const env = makeEnv();
+    const req = new Request("https://worker.example/tailor", {
+      method: "POST",
+      body: JSON.stringify({ chunks, targetField: "Nursing", jobDescription: "Seeking a pediatric ICU nurse with Epic experience." }),
+    });
+    await worker.fetch(req, env);
+    const systemPrompt = env.AI.run.mock.calls[0][1].messages[0].content;
+    expect(systemPrompt).toContain("Seeking a pediatric ICU nurse with Epic experience.");
+    expect(systemPrompt).toContain("REFERENCE MATERIAL ONLY");
+  });
+
+  it("omits any job-posting framing from the prompt when jobDescription is absent", async () => {
+    const env = makeEnv();
+    const req = new Request("https://worker.example/tailor", {
+      method: "POST",
+      body: JSON.stringify({ chunks, targetField: "Nursing" }),
+    });
+    await worker.fetch(req, env);
+    const systemPrompt = env.AI.run.mock.calls[0][1].messages[0].content;
+    expect(systemPrompt).not.toContain("REFERENCE MATERIAL ONLY");
+    expect(systemPrompt).not.toContain("Job posting");
+  });
+
+  it("rejects a jobDescription over the length cap with 400", async () => {
+    const res = await tailorWith({ jobDescription: "x".repeat(6001) });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/too long/);
+  });
+});
+
+describe("/cover-letter", () => {
+  const chunks = [{ heading: "RN, Mercy Hospital", bullets: ["Led triage"], tags: [] }];
+
+  function makeEnv(response = "Dear Hiring Manager, ...") {
+    return { AI: { run: vi.fn(async () => ({ response })) } };
+  }
+
+  async function coverLetterWith(body, env = makeEnv()) {
+    const req = new Request("https://worker.example/cover-letter", {
+      method: "POST",
+      body: JSON.stringify({ chunks, ...body }),
+    });
+    return { res: await worker.fetch(req, env), env };
+  }
+
+  it("returns the generated letter as plain text, no JSON Mode", async () => {
+    const { res } = await coverLetterWith({ header: "Jane Doe", targetField: "Nursing" });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.letter).toBe("Dear Hiring Manager, ...");
+  });
+
+  it("includes the candidate's name from header in the prompt when provided", async () => {
+    const { env } = await coverLetterWith({ header: "Jane Doe, jane@example.com" });
+    const systemPrompt = env.AI.run.mock.calls[0][1].messages[0].content;
+    expect(systemPrompt).toContain("Jane Doe, jane@example.com");
+  });
+
+  it("works with no targetField at all — a cover letter can stay generic", async () => {
+    const { res, env } = await coverLetterWith({});
+    expect(res.status).toBe(200);
+    const systemPrompt = env.AI.run.mock.calls[0][1].messages[0].content;
+    expect(systemPrompt).toContain("No specific target field was given");
+  });
+
+  it("includes the job posting as reference material, not instructions, when provided", async () => {
+    const { env } = await coverLetterWith({ jobDescription: "Seeking a pediatric ICU nurse with Epic experience." });
+    const systemPrompt = env.AI.run.mock.calls[0][1].messages[0].content;
+    expect(systemPrompt).toContain("Seeking a pediatric ICU nurse with Epic experience.");
+    expect(systemPrompt).toContain("REFERENCE MATERIAL ONLY");
+  });
+
+  it("omits job-posting framing when jobDescription is absent", async () => {
+    const { env } = await coverLetterWith({});
+    const systemPrompt = env.AI.run.mock.calls[0][1].messages[0].content;
+    expect(systemPrompt).not.toContain("REFERENCE MATERIAL ONLY");
+  });
+
+  it("rejects a jobDescription over the length cap with 400", async () => {
+    const { res } = await coverLetterWith({ jobDescription: "x".repeat(6001) });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/too long/);
+  });
+
+  it("retries once on timeout before giving up, same reasoning as /tailor", async () => {
+    vi.useFakeTimers();
+    try {
+      let call = 0;
+      const env = {
+        AI: {
+          run: vi.fn(() => {
+            call += 1;
+            if (call < 2) return new Promise(() => {}); // never resolves — withTimeout's own timer wins
+            return Promise.resolve({ response: "Dear Hiring Manager, ..." });
+          }),
+        },
+      };
+      const resultPromise = coverLetterWith({}, env);
+      await vi.advanceTimersByTimeAsync(30_000); // first attempt's COVER_LETTER_TIMEOUT_MS elapses
+      const { res } = await resultPromise;
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(env.AI.run).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up with reason timeout if every attempt times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const env = { AI: { run: vi.fn(() => new Promise(() => {})) } };
+      const resultPromise = coverLetterWith({}, env);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const { res } = await resultPromise;
+      const body = await res.json();
+      expect(res.status).toBe(504);
+      expect(body.ok).toBe(false);
+      expect(body.reason).toBe("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

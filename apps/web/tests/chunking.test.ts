@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunkResumeText } from "@/lib/chunking";
+import { chunkResumeText, extractResumeHeader } from "@/lib/chunking";
 
 const RESUME_WITH_HEADINGS = `
 Jane Doe
@@ -67,5 +67,30 @@ describe("chunkResumeText: generic, no field-specific logic", () => {
 
   it("never throws on empty input", () => {
     expect(chunkResumeText("")).toEqual([]);
+  });
+});
+
+describe("extractResumeHeader: captures the name/contact preamble chunking otherwise discards", () => {
+  it("captures the lines before the first recognized section heading", () => {
+    const header = extractResumeHeader(RESUME_WITH_HEADINGS);
+    expect(header).toContain("Jane Doe");
+    expect(header).toContain("Registered Nurse");
+    expect(header).not.toContain("Summary");
+    expect(header).not.toContain("Compassionate");
+  });
+
+  it("returns undefined, not the whole document, when no heading is found anywhere", () => {
+    // RESUME_WITHOUT_HEADINGS is exactly the case chunkResumeText falls back
+    // to chunkAsFallback for — capturing the same text again as "header"
+    // would just duplicate it into a cover-letter prompt for no reason.
+    expect(extractResumeHeader(RESUME_WITHOUT_HEADINGS)).toBeUndefined();
+  });
+
+  it("returns undefined when the very first line is already a recognized heading", () => {
+    expect(extractResumeHeader("Experience\nRN, Mercy Hospital\n- Led triage")).toBeUndefined();
+  });
+
+  it("never throws on empty input", () => {
+    expect(extractResumeHeader("")).toBeUndefined();
   });
 });

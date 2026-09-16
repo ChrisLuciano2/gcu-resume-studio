@@ -22,6 +22,7 @@ export async function tailorChunks(
   workerUrl: string,
   chunks: unknown[],
   targetField: string,
+  jobDescription?: string,
 ): Promise<TailorResponse> {
   // The Worker retries internally up to 2x against its own 40s-per-attempt
   // budget (worker-template/src/index.js's TAILOR_TIMEOUT_MS and MAX_ATTEMPTS)
@@ -29,7 +30,26 @@ export async function tailorChunks(
   // confirmed live as real, non-hypothetical failure modes for this model. This
   // client-side timeout must comfortably exceed that worst case (~80s), or we'd
   // abort a retry sequence that was about to succeed.
-  return callWorker(workerUrl, "/tailor", { chunks, targetField }, 100_000);
+  return callWorker(workerUrl, "/tailor", { chunks, targetField, jobDescription }, 100_000);
+}
+
+export interface CoverLetterResponse {
+  ok: boolean;
+  letter?: string;
+  reason?: string;
+}
+
+export async function generateCoverLetter(
+  workerUrl: string,
+  chunks: unknown[],
+  header: string | undefined,
+  targetField: string | undefined,
+  jobDescription?: string,
+): Promise<CoverLetterResponse> {
+  // Worst case bounded the same way as /tailor: MAX_ATTEMPTS (2) retries at
+  // COVER_LETTER_TIMEOUT_MS (30s) each in worker-template/src/index.js — this
+  // client-side timeout must comfortably exceed that ~60s worst case.
+  return callWorker(workerUrl, "/cover-letter", { chunks, header, targetField, jobDescription }, 80_000);
 }
 
 async function callWorker<T>(workerUrl: string, path: string, body: unknown, timeoutMs: number): Promise<T> {
