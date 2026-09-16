@@ -5,10 +5,14 @@
 // SUPABASE_SERVICE_KEY (secret_text), DAILY_CHAT_BUDGET (plain_text).
 
 const EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5";
-// Verify against developers.cloudflare.com/workers-ai/models/ before shipping —
-// the catalog had a deprecation wave in May 2026, so pin whatever the live
-// instruction-tuned Llama-3.1-8B-class model id is at deploy time.
-const TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct";
+// Confirmed live on developers.cloudflare.com/workers-ai/models/ as of 2026-09-16.
+// llama-3.1-8b-instruct (the original placeholder) is gone entirely from the
+// catalog — re-check this page before assuming the pin below is still current if
+// much time has passed; the catalog churns. 70B-fp8-fast over a smaller Llama
+// variant because both /tailor (must preserve facts exactly while reordering) and
+// /chat (must stay grounded in only the retrieved chunks) need reliable
+// instruction-following more than they need raw speed.
+const TEXT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const AI_TIMEOUT_MS = 20_000;
 
 export default {

@@ -33,18 +33,26 @@ npm test          # vitest against mocked AI/KV bindings
 npx wrangler dev   # local worker runtime
 ```
 
-## What needs your own accounts to finish
+## Account setup status
 
-This was built without live Supabase/Cloudflare dev credentials, so the OAuth round
-trips and live provisioning are implemented against the documented APIs but not
-exercised end-to-end here. Before shipping:
+See [`SETUP_CHECKLIST.md`](./SETUP_CHECKLIST.md) for the full walkthrough. As of
+2026-09-16, completed:
 
-1. Register the platform as a Supabase OAuth app (org Settings → OAuth Apps) and a
-   Cloudflare self-managed OAuth client (`Manage account > OAuth clients`) — fill in
-   the resulting client id/secret in `apps/web/.env`.
-2. Confirm the exact Cloudflare OAuth scope strings on the live "create OAuth client"
-   screen (the public changelog didn't enumerate them exhaustively) — see
-   `lib/cloudflare.ts`'s `CLOUDFLARE_OAUTH_SCOPES` constant.
-3. Confirm the current Workers AI text-generation model id against
-   `developers.cloudflare.com/workers-ai/models/` (the catalog had a deprecation wave
-   in May 2026) — see `worker-template/src/tailor.ts`'s `TEXT_MODEL` constant.
+1. ✅ `MASTER_KEY` / `SESSION_SECRET` generated.
+2. ✅ Central Postgres provisioned (Supabase project, Session pooler connection —
+   the project's direct connection defaults to IPv6, so the pooler is what's in
+   `DATABASE_URL`) and `prisma migrate dev` applied.
+3. ✅ Supabase OAuth app registered (org: AI_Ready_Resume), scopes: Database
+   (Read+Write), Projects (Read+Write), Secrets (Read-only).
+4. ✅ Cloudflare self-managed OAuth client registered. The scope names in
+   `lib/cloudflare.ts`'s `CLOUDFLARE_OAUTH_SCOPES` are now confirmed against the
+   live wizard, not guessed from the changelog — see that file's comment for what's
+   independently verified vs. inferred.
+5. ✅ Workers AI model ids confirmed live: `llama-3.1-8b-instruct` (the original
+   placeholder) is gone from the catalog entirely; `worker-template/src/index.js`'s
+   `TEXT_MODEL` now points at `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, confirmed
+   live 2026-09-16. `EMBEDDING_MODEL` (`bge-base-en-v1.5`) confirmed unchanged.
+
+Not yet done: the Cloudflare OAuth client is still **private** (usable only by the
+account that registered it) — domain verification to make it **public** is needed
+before real students (a different Cloudflare account) can authorize against it.

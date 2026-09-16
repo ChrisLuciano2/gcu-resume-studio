@@ -11,12 +11,21 @@ const AUTHORIZE_URL = "https://dash.cloudflare.com/oauth2/authorize";
 const TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 const API_BASE = "https://api.cloudflare.com/client/v4";
 
-// NOTE: verify these exact scope strings against the live "create OAuth client"
-// screen (Manage account > OAuth clients) before going live — the June 2026
-// changelog only gave examples, not an exhaustive list. See PLAN.md flag #1.
+// Verified against the live "create OAuth client" wizard (Manage account > OAuth
+// clients) on 2026-09-16 — the wizard's own scope picker lists these four exact
+// permissions (as "Workers Scripts Write", "Workers KV Storage Write", "Account
+// Settings Read", "User Details Read") as what's needed for: deploying/updating a
+// student's Worker, creating their KV namespace, listing their accounts, and
+// reading their account-holder identity. The dashboard shows display names, not
+// the raw `scope` query-param strings the authorize URL needs — these dot-notation
+// slugs match the pattern Cloudflare's own OAuth changelog used for two of the
+// four (workers-scripts.write, workers-kv-storage.write); "account-settings.read"
+// is inferred from the matching category name rather than independently
+// confirmed. If the OAuth authorize redirect ever comes back with an invalid_scope
+// error, this is the first thing to re-check.
 export const CLOUDFLARE_OAUTH_SCOPES = [
   "user-details.read",
-  "account:read",
+  "account-settings.read",
   "workers-scripts.write",
   "workers-kv-storage.write",
 ] as const;

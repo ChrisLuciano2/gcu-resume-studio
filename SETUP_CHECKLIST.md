@@ -3,6 +3,12 @@
 Everything below is a manual step in someone else's UI. Do them in this order —
 later steps depend on values from earlier ones.
 
+**Status as of 2026-09-16: steps 1–5 all done.** Remaining: the Cloudflare OAuth
+client is still private (only usable by the account that registered it) — it
+needs domain verification before a real student's Cloudflare account can
+authorize against it. See `README.md`'s "Account setup status" for specifics
+(which Supabase org, which scopes, which model ids got confirmed).
+
 ## 1. Generate `MASTER_KEY`
 
 This is the AES-256-GCM key that encrypts every OAuth token and every student's
