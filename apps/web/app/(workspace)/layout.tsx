@@ -40,6 +40,7 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
             <Link
               key={item.href}
               href={item.href}
+              className={`nav-item${active ? " nav-item-active" : ""}`}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -48,7 +49,7 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
                 width: "100%",
                 padding: "11px 20px",
                 borderLeft: `2px solid ${active ? "var(--purple)" : "transparent"}`,
-                background: active ? "var(--white)" : "transparent",
+                background: active ? "var(--white)" : undefined,
                 color: active ? "var(--purple)" : "var(--black)",
                 fontSize: 14,
                 fontWeight: active ? 600 : 400,

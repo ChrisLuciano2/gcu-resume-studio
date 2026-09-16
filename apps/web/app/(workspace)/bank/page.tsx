@@ -106,6 +106,7 @@ export default function BankPage() {
 
       {staleCount > 0 && (
         <div
+          className="rise-in"
           style={{
             display: "flex",
             alignItems: "center",
@@ -133,6 +134,7 @@ export default function BankPage() {
           return (
             <div
               key={d.id}
+              className="bank-card"
               style={{
                 border: "1px solid var(--line)",
                 borderRadius: 6,
@@ -140,6 +142,7 @@ export default function BankPage() {
                 display: "flex",
                 flexDirection: "column",
                 opacity: busyId === d.id ? 0.6 : 1,
+                transition: "opacity 180ms cubic-bezier(.2,.6,.2,1)",
               }}
             >
               {renamingId === d.id ? (
@@ -154,10 +157,10 @@ export default function BankPage() {
                     }}
                     style={{ flex: 1, minWidth: 0, fontSize: 14, padding: "7px 9px", border: "1px solid var(--purple)", borderRadius: 4 }}
                   />
-                  <button onClick={() => commitRename(d.id)} style={smallPrimaryBtn}>
+                  <button onClick={() => commitRename(d.id)} className="btn-primary" style={smallPrimaryBtn}>
                     save
                   </button>
-                  <button onClick={() => setRenamingId(null)} style={smallGhostBtn}>
+                  <button onClick={() => setRenamingId(null)} className="btn-ghost" style={smallGhostBtn}>
                     esc
                   </button>
                 </div>
@@ -194,7 +197,7 @@ export default function BankPage() {
 
               <div style={{ flex: 1 }} />
               <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <button onClick={() => router.push(`/editor?draft=${d.id}`)} style={outlineBtn}>
+                <button onClick={() => router.push(`/editor?draft=${d.id}`)} className="btn-outline" style={outlineBtn}>
                   Open in editor
                 </button>
                 <button
@@ -202,11 +205,12 @@ export default function BankPage() {
                     setRenamingId(d.id);
                     setRenameValue(d.name);
                   }}
+                  className="btn-outline"
                   style={smallGhostBtn}
                 >
                   rename
                 </button>
-                <button onClick={() => duplicate(d.id)} style={smallGhostBtn}>
+                <button onClick={() => duplicate(d.id)} className="btn-outline" style={smallGhostBtn}>
                   duplicate
                 </button>
                 <div style={{ flex: 1 }} />
@@ -215,7 +219,7 @@ export default function BankPage() {
                     can&rsquo;t be deleted
                   </span>
                 ) : (
-                  <button onClick={() => remove(d.id)} style={smallDangerBtn}>
+                  <button onClick={() => remove(d.id)} className="btn-danger-hover" style={smallDangerBtn}>
                     delete
                   </button>
                 )}

@@ -34,3 +34,190 @@ code,
 .mono {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
 }
+
+/* Motion primitives from design-system.md: "every animation reports status; none
+   decorates." 180ms cubic-bezier(.2,.6,.2,1) is the one easing used throughout —
+   state transitions, hover, and the rise-in for anything newly appearing. */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes draw {
+  from {
+    stroke-dashoffset: 22;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The one place motion is richer, per the design brief: dropping a field tag
+   should trigger a visible "thinking" state so the student never wonders
+   whether their drag registered while the AI rewrite runs. */
+@keyframes rewrite-shimmer {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.rise-in {
+  animation: rise 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+
+.rewriting-overlay {
+  position: relative;
+}
+
+.rewriting-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, var(--purple-tint) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: rewrite-shimmer 1.6s ease-in-out infinite, shimmer-sweep 2.4s linear infinite;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+@keyframes shimmer-sweep {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Job field chips: drag affordance + hover/active feedback matching the
+   prototype's style-hover="border-color: #522398;" / style-active="scale(0.985)".
+   !important below is deliberate, not sloppiness: every one of these components
+   sets its own border/background/color inline (React inline `style`, not a CSS
+   class) for its base appearance, and an inline `style` attribute always outranks
+   an external class selector on the same property — even a `:hover` one.
+   Confirmed live: without !important, `.matches(':hover')` was true but the
+   computed border-color never actually changed. !important is the correct tool
+   here specifically because this is a real specificity conflict with an inline
+   style on the same element, not a substitute for writing a stronger selector. */
+.field-chip {
+  transition: border-color 180ms cubic-bezier(0.2, 0.6, 0.2, 1), transform 120ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.field-chip:hover {
+  border-color: var(--purple) !important;
+}
+.field-chip:active {
+  transform: scale(0.985);
+}
+
+.category-toggle {
+  transition: border-color 180ms cubic-bezier(0.2, 0.6, 0.2, 1), color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.category-toggle:hover {
+  border-color: var(--purple) !important;
+  color: var(--purple) !important;
+}
+
+.field-row {
+  transition: background 180ms cubic-bezier(0.2, 0.6, 0.2, 1), color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.field-row:hover {
+  background: var(--surface);
+  color: var(--black);
+}
+
+/* Resume chunk row: hover matches the prototype's subtle background lift so a
+   student can tell which chunk their cursor is over before clicking edit. */
+.chunk-row {
+  transition: background 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.chunk-row:hover {
+  background: var(--surface);
+}
+
+.edit-btn {
+  transition: border-color 180ms cubic-bezier(0.2, 0.6, 0.2, 1), color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.edit-btn:hover {
+  border-color: var(--purple) !important;
+  color: var(--purple) !important;
+}
+
+.btn-outline {
+  transition: border-color 180ms cubic-bezier(0.2, 0.6, 0.2, 1), color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.btn-outline:hover {
+  border-color: var(--purple) !important;
+  color: var(--purple) !important;
+}
+
+.btn-primary {
+  transition: background 180ms cubic-bezier(0.2, 0.6, 0.2, 1), border-color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.btn-primary:hover {
+  background: var(--purple-hi) !important;
+  border-color: var(--purple-hi) !important;
+}
+
+.btn-ghost {
+  transition: color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.btn-ghost:hover {
+  color: var(--black) !important;
+}
+
+.btn-danger-hover {
+  transition: border-color 180ms cubic-bezier(0.2, 0.6, 0.2, 1), color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.btn-danger-hover:hover {
+  border-color: var(--danger-tint) !important;
+  color: var(--danger) !important;
+}
+
+.bank-card {
+  transition: border-color 180ms cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.bank-card:hover {
+  border-color: var(--line-strong) !important;
+}
+
+/* Workspace nav item: inactive rows get a quiet background hint on hover so the
+   nav doesn't feel dead between the active-item's purple rule. No inline
+   background is set for the inactive case (see layout.tsx), so this doesn't
+   need to fight a competing inline style. */
+.nav-item:not(.nav-item-active):hover {
+  background: var(--surface-2);
+}
+
+/* Chunk-level status badges — see editor/page.tsx's aiChangedIds/handEditedIds.
+   Ephemeral per-session state, not persisted: a quiet "this is what just moved"
+   cue, not a permanent audit trail. */
+.badge-changed {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--purple);
+}
+
+.badge-hand-edited {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}

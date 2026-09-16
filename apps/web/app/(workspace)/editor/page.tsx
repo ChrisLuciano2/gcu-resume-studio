@@ -38,6 +38,11 @@ function EditorPageInner() {
   const [proposal, setProposal] = useState<{ plan: DraftPlan; category: string; niche?: string; label: string } | null>(null);
   const [editingChunkId, setEditingChunkId] = useState<string | null>(null);
   const [editBuffer, setEditBuffer] = useState<{ bullets: string[]; tags: string }>({ bullets: [], tags: "" });
+  // Ephemeral, per-session status cues (not persisted) for which chunks the most
+  // recent rewrite or hand-edit actually touched — cleared on navigation/reload,
+  // same lifespan as the prototype's own "changed"/"edited by hand" badges.
+  const [aiChangedIds, setAiChangedIds] = useState<Set<string>>(new Set());
+  const [handEditedIds, setHandEditedIds] = useState<Set<string>>(new Set());
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -90,6 +95,13 @@ function EditorPageInner() {
     }
   }
 
+  // Decided (was explicitly open in student-tool-design-brief.md): dragging a
+  // field always tailors the CURRENTLY LOADED draft's current chunks — if that
+  // draft was already tailored once, a second drag builds on top of it, it does
+  // not reset to the original untailored chunks. This is what "flatChunks" on
+  // the server derives from draft.plan (the draft's own locked-in plan), so it
+  // falls out of the existing data model rather than needing new state; noting
+  // it explicitly here since the brief left it unresolved.
   async function performTailor(payload: DragPayload) {
     if (!draft || rewriting) return;
     setRewriting(true);
@@ -137,6 +149,17 @@ function EditorPageInner() {
     if (mode === "new") {
       router.push(`/editor?draft=${body.draft.id}`);
     } else {
+      // The rewrite may have touched any chunk (reorder + re-emphasis), so mark
+      // everything in the landed plan as "changed" rather than trying to diff
+      // old vs. new content — a hand-edit marker on any of these is now stale,
+      // since the AI call re-derived this chunk's presentation from scratch.
+      const touchedIds = new Set(proposal.plan.sections.flatMap((s) => s.chunks.map((c) => c.id)));
+      setAiChangedIds(touchedIds);
+      setHandEditedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of touchedIds) next.delete(id);
+        return next;
+      });
       await loadDraft(draft.id);
     }
   }
@@ -150,6 +173,7 @@ function EditorPageInner() {
 
   async function saveHandEdit(sectionIdx: number, chunkIdx: number) {
     if (!draft) return;
+    const editedChunkId = draft.plan.sections[sectionIdx]!.chunks[chunkIdx]!.id;
     const nextPlan: DraftPlan = {
       sections: draft.plan.sections.map((s, si) => ({
         ...s,
@@ -174,6 +198,12 @@ function EditorPageInner() {
     });
     if (res.ok) {
       setEditingChunkId(null);
+      setHandEditedIds((prev) => new Set(prev).add(editedChunkId));
+      setAiChangedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(editedChunkId);
+        return next;
+      });
       await loadDraft(draft.id);
     }
   }
@@ -300,7 +330,7 @@ function EditorPageInner() {
           )}
 
           {proposal && (
-            <div style={{ border: "1px solid #DCCDF4", background: "var(--purple-tint)", borderRadius: 6, padding: "18px 20px", marginBottom: 16 }}>
+            <div className="rise-in" style={{ border: "1px solid #DCCDF4", background: "var(--purple-tint)", borderRadius: 6, padding: "18px 20px", marginBottom: 16 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
                 <span style={{ fontSize: 15, fontWeight: 500 }}>Rewritten for {proposal.label}</span>
               </div>
@@ -309,13 +339,13 @@ function EditorPageInner() {
                 want this?
               </p>
               <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={() => commitProposal("new")} style={primaryBtn}>
+                <button onClick={() => commitProposal("new")} className="btn-primary" style={primaryBtn}>
                   Save as new draft
                 </button>
-                <button onClick={() => commitProposal("apply")} style={outlineBtn}>
+                <button onClick={() => commitProposal("apply")} className="btn-outline" style={outlineBtn}>
                   Apply to this draft
                 </button>
-                <button onClick={() => setProposal(null)} style={textBtn}>
+                <button onClick={() => setProposal(null)} className="btn-ghost" style={textBtn}>
                   discard
                 </button>
                 <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
@@ -332,6 +362,7 @@ function EditorPageInner() {
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
+            className={rewriting ? "rewriting-overlay" : undefined}
             style={{
               border: `1px solid ${dragOver ? "var(--purple)" : "var(--line)"}`,
               background: dragOver ? "var(--purple-tint)" : "var(--white)",
@@ -343,18 +374,24 @@ function EditorPageInner() {
             <div style={{ paddingBottom: 22, borderBottom: "1px solid var(--black)" }}>
               <div style={{ fontSize: 30, fontWeight: 600, letterSpacing: "-0.02em" }}>{draft.name}</div>
             </div>
-            {draft.plan.sections.map((section, sectionIdx) => (
-              <div key={section.section} style={{ padding: "24px 0", borderBottom: "1px solid var(--surface-2)" }}>
+            {draft.plan.sections.map((section, sectionIdx) => {
+              const sectionChunkIds = section.chunks.map((c) => c.id);
+              const sectionChanged = sectionChunkIds.some((id) => aiChangedIds.has(id));
+              const sectionHandEdited = !sectionChanged && sectionChunkIds.some((id) => handEditedIds.has(id));
+              return (
+              <div key={section.section} className={sectionChanged || sectionHandEdited ? "rise-in" : undefined} style={{ padding: "24px 0", borderBottom: "1px solid var(--surface-2)" }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
                   <span className="mono" style={{ fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--ink-3)" }}>
                     {section.section}
                   </span>
+                  {sectionChanged && <span className="mono badge-changed">changed</span>}
+                  {sectionHandEdited && <span className="mono badge-hand-edited">edited by hand</span>}
                 </div>
                 <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 20 }}>
                   {section.chunks.map((chunk, chunkIdx) => (
-                    <div key={chunk.id} style={{ position: "relative", margin: "-6px -10px", padding: "6px 10px", borderRadius: 4 }}>
+                    <div key={chunk.id} className="chunk-row" style={{ position: "relative", margin: "-6px -10px", padding: "6px 10px", borderRadius: 4 }}>
                       {editingChunkId === chunk.id ? (
-                        <div style={{ padding: 14, border: "1px solid var(--purple)", borderRadius: 6 }}>
+                        <div className="rise-in" style={{ padding: 14, border: "1px solid var(--purple)", borderRadius: 6 }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             {editBuffer.bullets.map((b, bi) => (
                               <textarea
@@ -384,10 +421,10 @@ function EditorPageInner() {
                             </div>
                           </div>
                           <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                            <button onClick={() => saveHandEdit(sectionIdx, chunkIdx)} style={primaryBtn}>
+                            <button onClick={() => saveHandEdit(sectionIdx, chunkIdx)} className="btn-primary" style={primaryBtn}>
                               Save
                             </button>
-                            <button onClick={() => setEditingChunkId(null)} style={outlineBtn}>
+                            <button onClick={() => setEditingChunkId(null)} className="btn-outline" style={outlineBtn}>
                               cancel
                             </button>
                             <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>
@@ -406,7 +443,7 @@ function EditorPageInner() {
                                 </div>
                               )}
                             </div>
-                            <button onClick={() => startEditChunk(sectionIdx, chunkIdx)} title="Edit this text by hand" style={editBtn}>
+                            <button onClick={() => startEditChunk(sectionIdx, chunkIdx)} title="Edit this text by hand" className="edit-btn" style={editBtn}>
                               edit
                             </button>
                           </div>
@@ -435,7 +472,8 @@ function EditorPageInner() {
                   ))}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -464,6 +502,7 @@ function CategoryRow({
           draggable
           onDragStart={(e) => onDragStart(e, payload)}
           onClick={() => onClickField(payload)}
+          className="field-chip"
           style={{
             flex: 1,
             minWidth: 0,
@@ -502,14 +541,14 @@ function CategoryRow({
             color: "var(--ink-3)",
             cursor: "pointer",
           }}
-          className="mono"
+          className="mono category-toggle"
         >
           <span style={{ fontSize: 12, lineHeight: 1 }}>{open ? "−" : "+"}</span>
           <span style={{ fontSize: 9, lineHeight: 1 }}>{category.items.length}</span>
         </button>
       </div>
       {open && (
-        <div style={{ margin: "4px 0 8px 11px", paddingLeft: 11, borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 1 }}>
+        <div className="rise-in" style={{ margin: "4px 0 8px 11px", paddingLeft: 11, borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 1 }}>
           {category.items.map((field) => {
             const fieldPayload: DragPayload = { category: category.label, niche: field.label, label: field.label };
             return (
@@ -518,6 +557,7 @@ function CategoryRow({
                 draggable
                 onDragStart={(e) => onDragStart(e, fieldPayload)}
                 onClick={() => onClickField(fieldPayload)}
+                className="field-row"
                 style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 4, fontSize: 12.5, lineHeight: 1.4, cursor: "grab" }}
               >
                 <span style={{ display: "inline-block", width: 4, height: 4, borderRadius: 999, background: "var(--line-strong)", flexShrink: 0 }} />
