@@ -39,6 +39,21 @@ describe("pure helpers", () => {
     expect(safeParseJsonArray('{"not":"an array"}')).toBeNull();
   });
 
+  it("safeParseJsonArray: unwraps { plan: [...] } — the actual shape JSON Mode returns as a string", () => {
+    // Confirmed live: this is not a hypothetical shape — Workers AI's response_
+    // format: json_schema sometimes returns .response as this exact string
+    // instead of an already-parsed object, and the schema wraps the array in
+    // `plan`, not a bare array. The earlier version of this function only
+    // accepted a bare array and silently failed on every one of these.
+    const text = '{"plan": [{"id": "1", "bullets": ["x"], "tags": []}]}';
+    expect(safeParseJsonArray(text)).toEqual([{ id: "1", bullets: ["x"], tags: [] }]);
+  });
+
+  it("safeParseJsonArray: truncated/incomplete JSON (a real symptom of output-length truncation) still returns null, not a partial parse", () => {
+    const truncated = '{"plan": [{"id": "1", "bullets": ["Led triage"], "tags": ["nursing"';
+    expect(safeParseJsonArray(truncated)).toBeNull();
+  });
+
   it("todayUtc: returns a YYYY-MM-DD string", () => {
     expect(todayUtc()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
@@ -141,5 +156,102 @@ describe("/chat rate limiting and caching (mocked AI/KV/Supabase)", () => {
     const chunkCall = global.fetch.mock.calls.find(([url]) => String(url).includes("/resume_chunks"));
     expect(chunkCall[0]).toContain("id=in.");
     expect(chunkCall[0]).toContain("chunk-1");
+  });
+});
+
+describe("/tailor: retries a non-deterministic bad JSON response or a timeout instead of giving up immediately", () => {
+  const chunks = [{ id: "1", section: "Experience", bullets: ["Did a thing"], tags: [] }];
+  // MAX_ATTEMPTS is 2 (see src/index.js) — bounding worst-case latency at ~2x
+  // TAILOR_TIMEOUT_MS rather than 3x, since each attempt can now run up to 40s.
+
+  async function tailor(env) {
+    const req = new Request("https://worker.example/tailor", {
+      method: "POST",
+      body: JSON.stringify({ chunks, targetField: "Nursing" }),
+    });
+    return worker.fetch(req, env);
+  }
+
+  it("succeeds if the 2nd attempt returns valid JSON Mode output after the 1st fails to parse", async () => {
+    let call = 0;
+    const env = {
+      AI: {
+        run: vi.fn(async () => {
+          call += 1;
+          // Confirmed live: JSON Mode occasionally returns something that fails
+          // our validation even under a schema — this mocks that non-determinism
+          // rather than assuming every call succeeds or fails identically.
+          if (call < 2) return { response: "sorry, I can't help with that" };
+          return { response: { plan: [{ id: "1", bullets: ["Did a thing, emphasized for nursing"], tags: [] }] } };
+        }),
+      },
+    };
+    const res = await tailor(env);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.plan[0].id).toBe("1");
+    expect(env.AI.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("succeeds if the 2nd attempt returns valid output after the 1st times out", async () => {
+    // Confirmed live: the exact same request timed out once (>40s) and
+    // succeeded in ~8s on a retry — a timeout here is transient tail latency,
+    // not a doomed request, so it must be retried the same as a bad-JSON
+    // response, not returned as an immediate failure. Fake timers so this
+    // doesn't actually burn 40 real seconds per test run.
+    vi.useFakeTimers();
+    try {
+      let call = 0;
+      const env = {
+        AI: {
+          run: vi.fn(() => {
+            call += 1;
+            if (call < 2) return new Promise(() => {}); // never resolves — withTimeout's own timer wins
+            return Promise.resolve({ response: { plan: [{ id: "1", bullets: ["Did a thing"], tags: [] }] } });
+          }),
+        },
+      };
+      const resPromise = tailor(env);
+      await vi.advanceTimersByTimeAsync(40_000); // first attempt's TAILOR_TIMEOUT_MS elapses
+      const res = await resPromise;
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(env.AI.run).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up with reason unparseable_ai_response only after exhausting all attempts", async () => {
+    const env = {
+      AI: { run: vi.fn(async () => ({ response: "still not JSON" })) },
+    };
+    const res = await tailor(env);
+    const body = await res.json();
+    expect(res.status).toBe(502);
+    expect(body.ok).toBe(false);
+    expect(body.reason).toBe("unparseable_ai_response");
+    expect(env.AI.run.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("gives up with reason timeout if every attempt times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const env = {
+        AI: { run: vi.fn(() => new Promise(() => {})) },
+      };
+      const resPromise = tailor(env);
+      await vi.advanceTimersByTimeAsync(40_000); // attempt 1
+      await vi.advanceTimersByTimeAsync(40_000); // attempt 2
+      const res = await resPromise;
+      const body = await res.json();
+      expect(res.status).toBe(504);
+      expect(body.ok).toBe(false);
+      expect(body.reason).toBe("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

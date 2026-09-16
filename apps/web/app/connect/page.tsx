@@ -178,14 +178,19 @@ function ConnectionCard({
             fontWeight: 500,
             padding: "11px 18px",
             border: "1px solid var(--purple)",
-            background: status === "CONNECTING" ? "var(--surface)" : "var(--purple)",
-            color: status === "CONNECTING" ? "var(--ink-3)" : "var(--white)",
+            background: "var(--purple)",
+            color: "var(--white)",
             borderRadius: 4,
             cursor: "pointer",
           }}
-          disabled={status === "CONNECTING"}
         >
-          {status === "CONNECTING" ? "Connecting…" : `Connect ${title}`}
+          {/* Never disabled, even mid-"CONNECTING" — a provisioning step can crash
+              (see the refresh_token bug this caught) and leave status stuck here
+              with no server-side timeout to clear it. Retrying just re-runs the
+              OAuth flow and the idempotent provisioning steps; there's no unsafe
+              double-submit to guard against, so blocking the retry only traps the
+              student with no way out short of a manual DB fix. */}
+          {status === "CONNECTING" ? "Reconnect…" : `Connect ${title}`}
         </button>
       )}
       {children}

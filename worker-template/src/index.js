@@ -14,6 +14,11 @@ const EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5";
 // instruction-following more than they need raw speed.
 const TEXT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const AI_TIMEOUT_MS = 20_000;
+// /tailor generates a full structured rewrite (max_tokens: 2048, up to
+// MAX_ATTEMPTS retries) — confirmed live that AI_TIMEOUT_MS's 20s, sized for the
+// embedding/chat calls, was too tight once max_tokens went up to fix truncation
+// and cut a single attempt off mid-generation. Give this call its own budget.
+const TAILOR_TIMEOUT_MS = 40_000;
 
 export default {
   async fetch(request, env) {
@@ -58,25 +63,89 @@ async function handleTailor(request, env) {
     "You may reorder chunks and rewrite bullet phrasing to re-emphasize what matters for that field.",
     "You must NEVER invent facts, numbers, employers, dates, or skills that are not already present in the input.",
     "You must NEVER drop a chunk's underlying facts, only re-present them.",
-    "Respond ONLY with JSON: an array of { id, bullets, tags } in the new order. No prose, no markdown fences.",
   ].join(" ");
 
-  const aiResult = await withTimeout(
-    env.AI.run(TEXT_MODEL, {
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: JSON.stringify(chunks) },
-      ],
-    }),
-    AI_TIMEOUT_MS,
-  );
+  // Confirmed live 2026-09-16: prompting for "respond ONLY with JSON, no prose"
+  // was not reliable — the model sometimes wrapped the array in explanatory text
+  // that our string parser couldn't recover, failing the whole rewrite. Workers AI
+  // JSON Mode (response_format: json_schema) makes the platform itself enforce
+  // the shape instead of hoping the model follows an instruction, and is listed as
+  // supported for this model at developers.cloudflare.com/workers-ai/json-mode/.
+  //
+  // Also confirmed live: JSON Mode still isn't 100% reliable even so — the exact
+  // same request that failed with an unparseable response on one call succeeded
+  // cleanly on a retry immediately after. This is sampling variance, not a
+  // systematic prompt/schema bug, so the right fix is a bounded retry, not more
+  // prompt engineering chasing a non-deterministic failure.
+  const responseFormat = {
+    type: "json_schema",
+    json_schema: {
+      type: "object",
+      properties: {
+        plan: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              bullets: { type: "array", items: { type: "string" } },
+              tags: { type: "array", items: { type: "string" } },
+            },
+            required: ["id", "bullets", "tags"],
+          },
+        },
+      },
+      required: ["plan"],
+    },
+  };
 
-  if (!aiResult) return json({ ok: false, reason: "timeout" }, 504);
+  // Confirmed live 2026-09-16: this model's latency for a 5-chunk resume is
+  // usually 8-11s but occasionally exceeds 40s on the same request — a timeout is
+  // transient tail latency, not a sign the request is doomed, so it gets retried
+  // exactly like a malformed-JSON response rather than failing immediately. Only
+  // 2 attempts (not 3) to keep the worst case — two slow attempts back to back —
+  // bounded at roughly 2x TAILOR_TIMEOUT_MS instead of 3x.
+  const MAX_ATTEMPTS = 2;
+  let lastReason = "timeout";
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const aiResult = await withTimeout(
+      env.AI.run(TEXT_MODEL, {
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: JSON.stringify(chunks) },
+        ],
+        response_format: responseFormat,
+        // Confirmed live 2026-09-16: the actual failure mode behind
+        // "unparseable_ai_response" wasn't the model ignoring the schema — it was
+        // the platform's default max_tokens truncating the output mid-JSON on a
+        // 5-chunk resume (debugRaw showed a syntactically-cut-off string missing
+        // its closing brackets). A full resume has more chunks than that, so this
+        // isn't an edge case to special-case around — it's the normal-size input.
+        // 2048 (not 4096) deliberately — the actual successful outputs observed
+        // were only a few hundred tokens; latency scales with payload/output size
+        // (confirmed live: 1.2s for one chunk vs. 8-40s+ for five), so the ceiling
+        // should be generously above real usage, not maximized for its own sake.
+        max_tokens: 2048,
+      }),
+      TAILOR_TIMEOUT_MS,
+    );
 
-  const parsed = safeParseJsonArray(aiResult.response);
-  if (!parsed) return json({ ok: false, reason: "unparseable_ai_response" }, 502);
+    if (!aiResult) {
+      lastReason = "timeout";
+      continue;
+    }
 
-  return json({ ok: true, plan: parsed });
+    // JSON Mode's docs example shows .response as an already-parsed object, but
+    // confirmed live: it sometimes comes back as a raw string instead (with this
+    // model, at least) — the safeParseJsonArray fallback isn't hypothetical
+    // future-proofing, it's load-bearing today.
+    const raw = aiResult.response;
+    const plan = typeof raw === "string" ? safeParseJsonArray(raw) : Array.isArray(raw?.plan) ? raw.plan : null;
+    if (plan) return json({ ok: true, plan });
+    lastReason = "unparseable_ai_response";
+  }
+
+  return json({ ok: false, reason: lastReason }, lastReason === "timeout" ? 504 : 502);
 }
 
 /**
@@ -245,7 +314,13 @@ function safeParseJsonArray(text) {
   try {
     const trimmed = text.trim().replace(/^```(json)?/, "").replace(/```$/, "");
     const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : null;
+    if (Array.isArray(parsed)) return parsed;
+    // Confirmed live: our JSON Mode schema wraps the array in { plan: [...] },
+    // and when this fallback's caller (a raw string from .response) actually
+    // needs it, it's this wrapped shape, not a bare array — unwrap it rather
+    // than only handling the shape the caller doesn't actually produce.
+    if (parsed && Array.isArray(parsed.plan)) return parsed.plan;
+    return null;
   } catch {
     return null;
   }

@@ -26,7 +26,9 @@ export async function GET(req: NextRequest) {
         method: "OAUTH",
         status: "CONNECTING",
         encryptedAccessToken: encryptSecret(tokens.access_token),
-        encryptedRefreshToken: encryptSecret(tokens.refresh_token),
+        // Cloudflare doesn't always issue a refresh_token (confirmed 2026-09-16
+        // against a live exchange) — never assume it's present.
+        encryptedRefreshToken: tokens.refresh_token ? encryptSecret(tokens.refresh_token) : null,
         lastError: null,
       },
     });

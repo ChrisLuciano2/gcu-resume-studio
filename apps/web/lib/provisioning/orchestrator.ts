@@ -150,6 +150,11 @@ export async function provisionCloudflare(userId: string): Promise<void> {
       dailyChatBudget: 20,
     });
     const workerUrl = await cloudflare.enableWorkersDevRoute(bearerToken, accountId, scriptName);
+    // A freshly created workers.dev subdomain isn't immediately resolvable (real
+    // DNS propagation delay, confirmed live) — don't mark this step done until
+    // the Worker is actually reachable, or the very next thing the student does
+    // (upload a resume) can fail with an opaque network error.
+    await cloudflare.waitForWorkerReachable(workerUrl);
 
     const latestMeta = await getMeta(cfConnection.id);
     await saveMeta(cfConnection.id, { ...latestMeta, accountId, kvNamespaceId, workerUrl, workerScriptName: scriptName });

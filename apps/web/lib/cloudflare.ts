@@ -55,7 +55,13 @@ export function buildAuthorizeUrl(opts: { state: string; codeChallenge: string }
 
 export interface CloudflareTokenResponse {
   access_token: string;
-  refresh_token: string;
+  // Confirmed against a live token exchange on 2026-09-16: Cloudflare's response
+  // does not always include a refresh_token (unlike Supabase's, which does) — this
+  // was previously typed as required and crashed encryptSecret() with "undefined"
+  // the first time this flow ran for real. Provisioning only needs access_token
+  // (it's a one-shot operation, not a long-lived session), so treat this as
+  // optional everywhere it's stored rather than assuming it exists.
+  refresh_token?: string;
   expires_in: number;
 }
 
@@ -162,7 +168,18 @@ export async function deployWorker(params: WorkerDeployParams): Promise<void> {
   }
 }
 
-/** Enables (or reads back) the script's workers.dev subdomain route. */
+/**
+ * Enables (or reads back) the script's workers.dev subdomain route.
+ *
+ * Confirmed live on 2026-09-16: a Cloudflare account that has never used Workers
+ * before has NO account-level workers.dev subdomain yet — GET .../workers/subdomain
+ * 404s with "You do not have a workers.dev subdomain" until one is created. The
+ * Cloudflare dashboard's own onboarding creates one automatically the first time
+ * you open Workers & Pages, which masked this for accounts (like whoever wrote
+ * this code) that had already done that manually. A brand-new GCU student's
+ * Cloudflare account will not have — this is expected to be the common case here,
+ * not an edge case, so create one via PUT rather than just erroring out.
+ */
 export async function enableWorkersDevRoute(
   bearerToken: string,
   accountId: string,
@@ -172,9 +189,61 @@ export async function enableWorkersDevRoute(
     method: "POST",
     body: JSON.stringify({ enabled: true }),
   });
-  const subdomainRes = await cfFetch(bearerToken, `/accounts/${accountId}/workers/subdomain`);
-  const accountSubdomain = subdomainRes.result.subdomain as string;
+
+  const accountSubdomain = await getOrCreateAccountSubdomain(bearerToken, accountId);
   return `https://${scriptName}.${accountSubdomain}.workers.dev`;
+}
+
+/**
+ * Confirmed live on 2026-09-16: a workers.dev subdomain that was just created (see
+ * getOrCreateAccountSubdomain) isn't immediately resolvable — the first request to
+ * it fails at the DNS/connect level (fetch throws, not an HTTP error status) for
+ * roughly a minute after creation. A student who connects Cloudflare and
+ * immediately uploads a resume would hit this exact race in the ingestion route's
+ * call to the Worker's /embed endpoint. Poll here, as part of provisioning, so
+ * "cloudflare_worker: done" actually means the Worker is reachable, not just that
+ * the deploy API call succeeded.
+ */
+export async function waitForWorkerReachable(
+  workerUrl: string,
+  { timeoutMs = 90_000, intervalMs = 3_000 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      // Any response at all (even a 404/405 for the wrong method) proves DNS
+      // resolved and the Worker is serving — GET isn't a route this Worker
+      // handles, so a reachable-but-405-shaped reply is the expected success case.
+      await fetch(workerUrl, { method: "GET", signal: AbortSignal.timeout(5_000) });
+      return;
+    } catch {
+      if (Date.now() > deadline) {
+        throw new Error(`Worker at ${workerUrl} did not become reachable within ${timeoutMs}ms`);
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+}
+
+async function getOrCreateAccountSubdomain(bearerToken: string, accountId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/accounts/${accountId}/workers/subdomain`, {
+    headers: { Authorization: `Bearer ${bearerToken}` },
+  });
+  if (res.ok) {
+    const body = await res.json();
+    return body.result.subdomain as string;
+  }
+
+  // No subdomain registered yet — account_id is already globally unique (and
+  // lowercase hex, satisfying workers.dev's naming rules), so derive the
+  // subdomain from it rather than trying to invent a human-readable name that
+  // might collide with another Cloudflare customer's account.
+  const subdomain = `rs-${accountId.slice(0, 20)}`;
+  const created = await cfFetch(bearerToken, `/accounts/${accountId}/workers/subdomain`, {
+    method: "PUT",
+    body: JSON.stringify({ subdomain }),
+  });
+  return created.result.subdomain as string;
 }
 
 async function cfFetch(bearerToken: string, path: string, init?: RequestInit) {

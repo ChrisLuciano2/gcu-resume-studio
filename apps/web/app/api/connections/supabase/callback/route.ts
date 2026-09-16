@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
         method: "OAUTH",
         status: "CONNECTING",
         encryptedAccessToken: encryptSecret(tokens.access_token),
-        encryptedRefreshToken: encryptSecret(tokens.refresh_token),
+        encryptedRefreshToken: tokens.refresh_token ? encryptSecret(tokens.refresh_token) : null,
         lastError: null,
       },
     });

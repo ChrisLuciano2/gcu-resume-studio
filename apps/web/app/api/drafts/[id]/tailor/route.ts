@@ -32,10 +32,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
     const result = await tailorChunks(ctx.workerUrl, flatChunks, targetField);
     if (!result.ok || !result.plan) {
-      return NextResponse.json(
-        { ok: false, reason: result.reason ?? "unknown", message: "The rewrite didn't finish in time — try again." },
-        { status: 502 },
-      );
+      // Reason-specific message: "didn't finish in time" was previously shown
+      // for every failure mode, including unparseable_ai_response — a real case
+      // (confirmed live: JSON Mode still occasionally produces invalid output
+      // even under a schema) where the rewrite actually completed fast, it just
+      // didn't come back in a usable shape. Telling the student to "try again"
+      // is still the right call in both cases, but the label shouldn't lie about
+      // what happened.
+      const message =
+        result.reason === "timeout"
+          ? "The rewrite didn't finish in time — try again."
+          : "The rewrite didn't come back in a usable shape — try again.";
+      return NextResponse.json({ ok: false, reason: result.reason ?? "unknown", message }, { status: 502 });
     }
 
     // Re-sectioned using the original chunk->section mapping; the AI only

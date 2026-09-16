@@ -35,7 +35,11 @@ export function buildAuthorizeUrl(opts: { state: string; codeChallenge: string }
 
 export interface SupabaseTokenResponse {
   access_token: string;
-  refresh_token: string;
+  // Confirmed present on a live exchange (2026-09-16), but Cloudflare's equivalent
+  // response turned out NOT to always include one despite being typed as required
+  // — treat this the same defensive way rather than assume Supabase's behavior is
+  // guaranteed to stay that way across accounts/configs.
+  refresh_token?: string;
   token_type: string;
   expires_in: number;
 }

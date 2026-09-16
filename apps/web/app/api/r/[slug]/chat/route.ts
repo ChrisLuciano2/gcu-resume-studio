@@ -21,18 +21,24 @@ export async function POST(req: NextRequest, { params }: { params: { slug: strin
   try {
     const result = await proxyToWorker(index.workerUrl, params.slug, question);
     return NextResponse.json(result.body, { status: result.status });
-  } catch {
-    const fresh = await prisma.connection.findUnique({
-      where: { userId_provider: { userId: index.userId, provider: "CLOUDFLARE" } },
-    });
-    const freshWorkerUrl = (fresh?.metadataJson as Record<string, unknown> | null)?.workerUrl as string | undefined;
-    if (!freshWorkerUrl || freshWorkerUrl === index.workerUrl) {
+  } catch (err) {
+    console.error("chat proxy: initial attempt failed", err);
+    try {
+      const fresh = await prisma.connection.findUnique({
+        where: { userId_provider: { userId: index.userId, provider: "CLOUDFLARE" } },
+      });
+      const freshWorkerUrl = (fresh?.metadataJson as Record<string, unknown> | null)?.workerUrl as string | undefined;
+      if (!freshWorkerUrl || freshWorkerUrl === index.workerUrl) {
+        return NextResponse.json({ error: "this resume's chatbot is temporarily unavailable" }, { status: 502 });
+      }
+
+      await prisma.publicDraftIndex.update({ where: { slug: params.slug }, data: { workerUrl: freshWorkerUrl } });
+      const retry = await proxyToWorker(freshWorkerUrl, params.slug, question);
+      return NextResponse.json(retry.body, { status: retry.status });
+    } catch (retryErr) {
+      console.error("chat proxy: retry with refreshed workerUrl also failed", retryErr);
       return NextResponse.json({ error: "this resume's chatbot is temporarily unavailable" }, { status: 502 });
     }
-
-    await prisma.publicDraftIndex.update({ where: { slug: params.slug }, data: { workerUrl: freshWorkerUrl } });
-    const retry = await proxyToWorker(freshWorkerUrl, params.slug, question);
-    return NextResponse.json(retry.body, { status: retry.status });
   }
 }
 
