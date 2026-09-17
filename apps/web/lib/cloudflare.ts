@@ -24,20 +24,27 @@ const API_BASE = "https://api.cloudflare.com/client/v4";
 // confirmed. If the OAuth authorize redirect ever comes back with an invalid_scope
 // error, this is the first thing to re-check.
 //
-// Deliberately does NOT include a D1 scope. Confirmed live 2026-09-16: these four
-// scopes get a 401 "Authentication error" on every D1 endpoint (create database,
-// query), and the exact dot-notation slug D1 would need isn't documented anywhere
-// findable — guessing wrong here would break every student's OAuth connection with
-// invalid_scope, for a system nobody will be around to debug. Provisioning gets its
-// D1 access from the pasted-API-token fallback path instead (see connect/page.tsx
-// and verifyToken below), where a student picks "D1:Edit" by name in Cloudflare's
-// own token UI — no scope-slug guessing involved. If someone later confirms the
-// right OAuth scope slug, it can be added here.
+// D1 scope resolved 2026-09-17: the previous four scopes got a 401 "Authentication
+// error" on every D1 endpoint, and no doc page published the slug D1 needed. Rather
+// than guess (wrong would break every student's OAuth connection with
+// invalid_scope), confirmed it directly against Cloudflare's own
+// GET /api/v4/oauth/scopes response while signed into the live dashboard: D1's
+// scopes are "d1.read", "d1.write", "d1.metadata_read" — same dot-notation
+// convention as the other four, "D1 Write" display name matching the "D1:Edit"
+// token permission the pasted-token fallback path already uses (see
+// connect/page.tsx and verifyToken below). Added d1.write here to match, and
+// added "D1 Write" to the live CLOUDFLARE_OAUTH_CLIENT_ID client's own scope
+// list on Cloudflare's dashboard the same day (5 scopes now, was 4) — both
+// sides have to agree or the authorize request 400s with invalid_scope. Not
+// yet re-verified that a full OAuth connect run reaches D1 without a 401 end
+// to end; the four-scope 401 that started this was confirmed live, this fix
+// wasn't re-tested against a real authorize/token/D1-call round trip yet.
 export const CLOUDFLARE_OAUTH_SCOPES = [
   "user-details.read",
   "account-settings.read",
   "workers-scripts.write",
   "workers-kv-storage.write",
+  "d1.write",
 ] as const;
 
 export function generatePkceVerifier(): string {

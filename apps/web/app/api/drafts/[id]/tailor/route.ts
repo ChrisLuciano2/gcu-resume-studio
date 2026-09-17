@@ -59,8 +59,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
     // Re-sectioned using the original chunk->section mapping; the AI only
     // reorders/rewrites bullets and tags, it never invents new section names.
+    // Section lookup must happen on the model's original (possibly duplicated)
+    // ids, since sectionBySection is keyed off those — dedupe only after
+    // section assignment, or every split-off duplicate falls back to "General".
     const sectionBySection = new Map(flatChunks.map((c) => [c.id, c.section]));
-    const proposedSections = groupIntoSections(result.plan, sectionBySection, plan.sections.map((s) => s.section));
+    const proposedSections = groupIntoSections(result.plan, sectionBySection, plan.sections.map((s) => s.section)).map(
+      (section) => ({ ...section, chunks: dedupeChunkIds(section.chunks) }),
+    );
 
     // `header` (candidate name/contact block, used for cover-letter
     // generation) isn't touched by tailoring at all — carry it through
@@ -71,6 +76,24 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   } catch (err) {
     return toErrorResponse(err);
   }
+}
+
+// The model's JSON Mode output is supposed to be one entry per input chunk id,
+// but it can split one input chunk's bullets across two (or more) output
+// entries while keeping the same original id on all of them — confirmed live,
+// not hypothetical. Left alone, that duplicate id flows into the plan the
+// student can commit, which persists it into the draft's stored plan in D1 —
+// not just a rendering glitch, since the editor keys React lists and its
+// aiChangedIds/handEditedIds tracking off chunk id. Renumbering the extra
+// copies here, before anything is returned to the client, keeps every id
+// that ever reaches storage unique without discarding any of the split content.
+function dedupeChunkIds<T extends { id: string }>(chunks: T[]): T[] {
+  const seen = new Map<string, number>();
+  return chunks.map((chunk) => {
+    const count = seen.get(chunk.id) ?? 0;
+    seen.set(chunk.id, count + 1);
+    return count === 0 ? chunk : { ...chunk, id: `${chunk.id}-split${count}` };
+  });
 }
 
 function groupIntoSections(

@@ -61,3 +61,41 @@ describe("POST /api/drafts/[id]/tailor: jobDescription validation", () => {
     expect(tailorChunks).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/drafts/[id]/tailor: duplicate chunk ids from the model", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renumbers a duplicate id the model splits one input chunk's bullets across, instead of returning it twice", async () => {
+    vi.mocked(tailorChunks).mockResolvedValueOnce({
+      ok: true,
+      plan: [
+        { id: "chunk-1", bullets: ["First half"], tags: [] },
+        { id: "chunk-1", bullets: ["Second half"], tags: [] },
+      ],
+    });
+    const { studentD1Query } = await import("@/lib/studentD1");
+    vi.mocked(studentD1Query).mockResolvedValueOnce([
+      {
+        plan: JSON.stringify({
+          sections: [{ section: "Experience", chunks: [{ id: "chunk-1", bullets: ["Original"], tags: [] }] }],
+        }),
+      },
+    ]);
+
+    const req = makeRequest({ targetField: "Nursing" });
+    const res = await POST(req, { params: { id: "draft-1" } });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    const allChunks = body.proposedPlan.sections.flatMap((s: { chunks: Array<{ id: string }> }) => s.chunks);
+    const ids = allChunks.map((c: { id: string }) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain("chunk-1");
+    expect(ids).toContain("chunk-1-split1");
+    // Still resolved to the original chunk's section, not dropped into "General".
+    expect(body.proposedPlan.sections).toHaveLength(1);
+    expect(body.proposedPlan.sections[0].section).toBe("Experience");
+  });
+});
