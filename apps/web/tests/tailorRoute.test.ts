@@ -99,3 +99,98 @@ describe("POST /api/drafts/[id]/tailor: duplicate chunk ids from the model", () 
     expect(body.proposedPlan.sections[0].section).toBe("Experience");
   });
 });
+
+describe("POST /api/drafts/[id]/tailor: heading/meta restoration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("restores the original chunk's heading/meta, since the model's response schema never returns them", async () => {
+    vi.mocked(tailorChunks).mockResolvedValueOnce({
+      ok: true,
+      plan: [{ id: "chunk-1", bullets: ["Rewritten bullet"], tags: ["new-tag"] }],
+    });
+    const { studentD1Query } = await import("@/lib/studentD1");
+    vi.mocked(studentD1Query).mockResolvedValueOnce([
+      {
+        plan: JSON.stringify({
+          sections: [
+            {
+              section: "Experience",
+              chunks: [
+                {
+                  id: "chunk-1",
+                  heading: "Retail Shift Supervisor, Sunrise Outfitters",
+                  meta: "Jun 2024 - Present",
+                  bullets: ["Original bullet"],
+                  tags: ["old-tag"],
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+
+    const req = makeRequest({ targetField: "Nursing" });
+    const res = await POST(req, { params: { id: "draft-1" } });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    const chunk = body.proposedPlan.sections[0].chunks[0];
+    expect(chunk.heading).toBe("Retail Shift Supervisor, Sunrise Outfitters");
+    expect(chunk.meta).toBe("Jun 2024 - Present");
+    // The model's actual rewrite still applies — this isn't reverting content,
+    // just restoring the fields the model was never asked for.
+    expect(chunk.bullets).toEqual(["Rewritten bullet"]);
+    expect(chunk.tags).toEqual(["new-tag"]);
+  });
+});
+
+describe("POST /api/drafts/[id]/tailor: chunks the model omits from its response", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("carries an omitted chunk through unmodified instead of silently dropping it", async () => {
+    // The model only returned chunk-1 — chunk-2 (a whole job entry) is missing
+    // from its response entirely, the exact failure mode confirmed live during
+    // the 2026-09-18 audit (see GCU_RESUME_STUDIO_AUDIT.md).
+    vi.mocked(tailorChunks).mockResolvedValueOnce({
+      ok: true,
+      plan: [{ id: "chunk-1", bullets: ["Rewritten bullet"], tags: [] }],
+    });
+    const { studentD1Query } = await import("@/lib/studentD1");
+    vi.mocked(studentD1Query).mockResolvedValueOnce([
+      {
+        plan: JSON.stringify({
+          sections: [
+            {
+              section: "Experience",
+              chunks: [
+                { id: "chunk-1", heading: "Job A", bullets: ["Original A"], tags: [] },
+                { id: "chunk-2", heading: "Job B", bullets: ["Original B"], tags: ["b-tag"] },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+
+    const req = makeRequest({ targetField: "Nursing" });
+    const res = await POST(req, { params: { id: "draft-1" } });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    const chunks = body.proposedPlan.sections[0].chunks;
+    expect(chunks).toHaveLength(2);
+    const chunkA = chunks.find((c: { id: string }) => c.id === "chunk-1");
+    const chunkB = chunks.find((c: { id: string }) => c.id === "chunk-2");
+    expect(chunkA.bullets).toEqual(["Rewritten bullet"]);
+    // chunk-2 survives with its original content, not dropped.
+    expect(chunkB).toBeDefined();
+    expect(chunkB.heading).toBe("Job B");
+    expect(chunkB.bullets).toEqual(["Original B"]);
+    expect(chunkB.tags).toEqual(["b-tag"]);
+  });
+});

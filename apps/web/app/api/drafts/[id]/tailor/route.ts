@@ -40,6 +40,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const flatChunks = plan.sections.flatMap((s) =>
       s.chunks.map((c) => ({ id: c.id, section: s.section, heading: c.heading, meta: c.meta, bullets: c.bullets, tags: c.tags })),
     );
+    const chunkById = new Map(flatChunks.map((c) => [c.id, c]));
 
     const result = await tailorChunks(ctx.workerUrl, flatChunks, targetField, jobDescription || undefined);
     if (!result.ok || !result.plan) {
@@ -57,13 +58,39 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       return NextResponse.json({ ok: false, reason: result.reason ?? "unknown", message }, { status: 502 });
     }
 
+    // The model's response schema only ever asks for bullets/tags — it has no
+    // heading/meta fields at all — so every returned chunk needs its original
+    // job-title/employer/date heading merged back in, or that line silently
+    // disappears from the editor on every single tailor (confirmed live
+    // 2026-09-18: this was happening for every successfully-returned chunk, not
+    // just the audit's missing-chunk finding below — the "EXPERIENCE" section's
+    // bold heading line was gone from every tested tailored draft).
+    const restoredPlan = result.plan.map((c) => {
+      const original = chunkById.get(c.id);
+      return { id: c.id, heading: original?.heading, meta: original?.meta, bullets: c.bullets, tags: c.tags };
+    });
+
+    // Confirmed live 2026-09-18 (see the audit doc): the model can omit an input
+    // chunk's id from its response entirely — under token pressure, or just
+    // choosing not to touch a chunk it judged irrelevant to the target field —
+    // and until now anything missing from the response just silently vanished
+    // from the proposed plan, with the UI still claiming "Nothing was invented
+    // or removed." Carrying the original chunk through unmodified instead means
+    // a chunk the model skipped keeps its pre-tailoring content rather than
+    // disappearing — worse than not being "re-emphasized" would be losing it.
+    const returnedIds = new Set(result.plan.map((c) => c.id));
+    const missingChunks = flatChunks
+      .filter((c) => !returnedIds.has(c.id))
+      .map((c) => ({ id: c.id, heading: c.heading, meta: c.meta, bullets: c.bullets, tags: c.tags }));
+    const fullPlan = [...restoredPlan, ...missingChunks];
+
     // Re-sectioned using the original chunk->section mapping; the AI only
     // reorders/rewrites bullets and tags, it never invents new section names.
     // Section lookup must happen on the model's original (possibly duplicated)
     // ids, since sectionBySection is keyed off those — dedupe only after
     // section assignment, or every split-off duplicate falls back to "General".
     const sectionBySection = new Map(flatChunks.map((c) => [c.id, c.section]));
-    const proposedSections = groupIntoSections(result.plan, sectionBySection, plan.sections.map((s) => s.section)).map(
+    const proposedSections = groupIntoSections(fullPlan, sectionBySection, plan.sections.map((s) => s.section)).map(
       (section) => ({ ...section, chunks: dedupeChunkIds(section.chunks) }),
     );
 
@@ -96,12 +123,8 @@ function dedupeChunkIds<T extends { id: string }>(chunks: T[]): T[] {
   });
 }
 
-function groupIntoSections(
-  rewritten: Array<{ id: string; bullets: string[]; tags: string[] }>,
-  sectionOf: Map<string, string>,
-  sectionOrder: string[],
-) {
-  const bySection = new Map<string, Array<{ id: string; bullets: string[]; tags: string[] }>>();
+function groupIntoSections<T extends { id: string }>(rewritten: T[], sectionOf: Map<string, string>, sectionOrder: string[]) {
+  const bySection = new Map<string, T[]>();
   for (const chunk of rewritten) {
     const section = sectionOf.get(chunk.id) ?? "General";
     if (!bySection.has(section)) bySection.set(section, []);

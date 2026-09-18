@@ -83,6 +83,11 @@ async function handleTailor(request, env) {
     "You may reorder chunks and rewrite bullet phrasing to re-emphasize what matters for that field.",
     "You must NEVER invent facts, numbers, employers, dates, or skills that are not already present in the input.",
     "You must NEVER drop a chunk's underlying facts, only re-present them.",
+    // Added 2026-09-18 after a live audit found a resume with the same ~15-20
+    // keyword tags duplicated after every single bullet — schema-level maxItems
+    // (below) is the real enforcement, but the model should be told the target
+    // up front rather than just truncated once it overshoots.
+    "Keep each chunk's tags concise: 2-5 short, specific keywords, never a long or repeated list.",
     // Added for job-description-based tailoring: a pasted posting is free text
     // from an authenticated user, not a trusted instruction source, so it's
     // framed the same defensive way /chat's prompt frames resume content
@@ -124,7 +129,13 @@ async function handleTailor(request, env) {
             properties: {
               id: { type: "string" },
               bullets: { type: "array", items: { type: "string" } },
-              tags: { type: "array", items: { type: "string" } },
+              // maxItems added 2026-09-18: confirmed live, with no cap the model
+              // can attach the same near-duplicate ~15-20 item keyword list to
+              // every chunk in a resume — schema enforcement here is the actual
+              // fix, the system prompt's "2-5 tags" guidance alone isn't reliable
+              // (same lesson as the "never invent facts" instruction elsewhere in
+              // this prompt, which is also stated and also not 100% followed).
+              tags: { type: "array", items: { type: "string" }, maxItems: 6 },
             },
             required: ["id", "bullets", "tags"],
           },
