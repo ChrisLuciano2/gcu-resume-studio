@@ -10,6 +10,10 @@ import { provisionCloudflare } from "@/lib/provisioning/orchestrator";
 // lean toward a scoped API token... build the Cloudflare card flexibly." OAuth is
 // primary (see .../cloudflare/start); this covers accounts where OAuth setup is
 // awkward.
+// See callback/route.ts's comment on maxDuration and the awaited provisioning
+// call below — same fix, same reason, needed on this path too.
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const userId = await requireUserId();
@@ -35,7 +39,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    void provisionCloudflare(userId).catch((err) => {
+    await provisionCloudflare(userId).catch((err) => {
       console.error("cloudflare provisioning (token path) failed", err);
     });
 
