@@ -72,13 +72,25 @@ See [`SETUP_CHECKLIST.md`](./SETUP_CHECKLIST.md) for the full walkthrough. As of
    created) against a disposable test account. OAuth is no longer blocked on D1 —
    only the domain-verification item below still gates it for real students.
 
+6. ✅ Deployed to production 2026-09-17/18 — Vercel Hobby tier,
+   https://gcu-resume-studio.vercel.app. Found and fixed three real
+   deploy-only bugs along the way (Next's file tracer couldn't see
+   `worker-template/src/index.js`, Prisma Client wasn't regenerating on
+   Vercel's cached installs, and — the serious one — provisioning was
+   fire-and-forget and got silently killed by the serverless runtime before
+   doing anything). Verified end-to-end against the live production URL:
+   signup, OAuth connect, and D1/KV/Worker provisioning all confirmed
+   actually completing, not just deploying without erroring.
+
 Not yet done:
 - The Cloudflare OAuth client is still **private** (usable only by the account
   that registered it) — domain verification to make it **public** is needed
-  before real students (a different Cloudflare account) can authorize against it.
-  This is the same domain you'll pick for the production deploy below, so do that
-  deploy first — you need a real domain to verify against anyway.
-- No hosted deployment exists yet — see "Deploying to production" below.
+  before real students (a different Cloudflare account) can authorize against
+  it. The free `vercel.app` domain the production deploy uses can't be
+  verified (you don't own it) — this needs a real owned domain, not just the
+  hosted deployment. Token-paste works for every student regardless, so this
+  isn't a hard blocker, just the gap between "works" and "OAuth works for
+  everyone."
 
 ## Deploying to production
 
